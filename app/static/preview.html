@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Compute · 实时预览</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f2f5; color: #1a1a2e; min-height: 100vh;
+    }
+    header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+      color: white; padding: 16px 28px; display: flex; align-items: center; gap: 12px;
+    }
+    header h1 { font-size: 1.3rem; font-weight: 600; }
+    header .badge {
+      background: #e94560; font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 700;
+    }
+    .main { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+    .tab {
+      padding: 8px 18px; border: 1.5px solid #d0d7de; border-radius: 8px;
+      background: white; cursor: pointer; font-weight: 600; font-size: 14px; color: #555;
+    }
+    .tab.active { background: #0f3460; color: white; border-color: #0f3460; }
+    .card {
+      background: white; border-radius: 12px; padding: 20px 22px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px;
+    }
+    .card h2 {
+      font-size: 1rem; font-weight: 600; color: #444; margin-bottom: 14px;
+      border-bottom: 2px solid #f0f2f5; padding-bottom: 8px;
+    }
+    .row { display: flex; gap: 18px; flex-wrap: wrap; }
+    .sidebar { flex: 1; min-width: 280px; max-width: 380px; }
+    .content { flex: 2; min-width: 320px; }
+    label.field-label { display: block; font-size: 13px; font-weight: 600; color: #666; margin: 12px 0 6px; }
+    .num-row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .num-field { flex: 1; min-width: 90px; }
+    input[type=text], input[type=number], select {
+      width: 100%; padding: 8px 10px; border: 1px solid #d0d7de; border-radius: 6px; font-size: 13px;
+    }
+    input:focus, select:focus { outline: none; border-color: #0f3460; box-shadow: 0 0 0 2px rgba(15,52,96,.15); }
+    .drop-zone {
+      border: 2px dashed #c0c9d5; border-radius: 8px; padding: 24px; text-align: center;
+      cursor: pointer; position: relative; overflow: hidden;
+    }
+    .drop-zone:hover { border-color: #0f3460; background: #f5f8ff; }
+    .drop-zone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
+    .algo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+    .algo-chip {
+      display: flex; gap: 8px; padding: 8px 10px; border: 1.5px solid #e0e6ed;
+      border-radius: 8px; cursor: pointer; font-size: 12px;
+    }
+    .algo-chip:hover { border-color: #0f3460; background: #f5f8ff; }
+    .algo-chip .chip-name { font-weight: 600; color: #333; }
+    .algo-chip .chip-code { color: #999; font-size: 10px; }
+    .chip-stage { display: inline-block; margin-top: 3px; font-size: 10px; padding: 1px 6px; border-radius: 8px; font-weight: 600; }
+    .stage-detect { background: #dff0d8; color: #3c763d; }
+    .stage-behavior { background: #d9edf7; color: #31708f; }
+    .btn {
+      width: 100%; padding: 11px; border: none; border-radius: 8px; color: white;
+      font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 12px;
+    }
+    .btn-primary { background: linear-gradient(135deg, #0f3460, #e94560); }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .btn-stop { background: #c62828; }
+    .btn-row { display: flex; gap: 8px; }
+    .btn-row .btn { flex: 1; }
+    .status-bar {
+      padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 500;
+      display: none; margin-bottom: 12px;
+    }
+    .status-loading { background: #fff8e1; color: #795548; border: 1px solid #ffe082; }
+    .status-success { background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7; }
+    .status-error { background: #ffebee; color: #c62828; border: 1px solid #ef9a9a; }
+    .status-info { background: #e3f2fd; color: #1565c0; border: 1px solid #90caf9; }
+    #image-container, #live-container {
+      min-height: 260px; display: flex; align-items: center; justify-content: center;
+      background: #0b1220; border-radius: 8px; overflow: hidden; position: relative;
+    }
+    #image-container .placeholder, #live-container .placeholder {
+      color: #8a93a6; font-size: 13px; text-align: center; padding: 20px;
+    }
+    #result-img, #live-img { max-width: 100%; max-height: 520px; object-fit: contain; display: block; }
+    #src-video, #src-cam {
+      position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none;
+    }
+    .hud {
+      position: absolute; left: 10px; top: 10px; background: rgba(0,0,0,.55);
+      color: #fff; font-size: 12px; padding: 6px 10px; border-radius: 6px; font-family: monospace;
+    }
+    .prompt-tag {
+      display: inline-block; background: #e3f2fd; border: 1px solid #90caf9;
+      color: #1565c0; padding: 2px 8px; border-radius: 10px; font-size: 11px; margin: 2px;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th {
+      background: #f5f7fa; font-weight: 600; color: #555; padding: 8px 10px;
+      text-align: left; border-bottom: 2px solid #e8ecf0;
+    }
+    tbody td { padding: 7px 10px; border-bottom: 1px solid #f0f2f5; }
+    .bbox-mono { font-family: monospace; font-size: 11px; color: #666; }
+    .conf-bar { width: 56px; height: 7px; background: #e8ecf0; border-radius: 4px; overflow: hidden; display: inline-block; vertical-align: middle; margin-right: 6px; }
+    .conf-fill { height: 100%; }
+    .hidden { display: none !important; }
+    .mode-hint { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.5; }
+    @media (max-width: 800px) { .sidebar { max-width: 100%; } }
+  </style>
+</head>
+<body>
+<header>
+  <span style="font-size:1.4rem">🔍</span>
+  <h1>AI Compute · 实时预览</h1>
+  <span class="badge">PREVIEW</span>
+</header>
+
+<div class="main">
+  <div class="tabs">
+    <button class="tab active" data-tab="image" onclick="switchTab('image')">图片</button>
+    <button class="tab" data-tab="video" onclick="switchTab('video')">视频流</button>
+  </div>
+
+  <div id="status-bar" class="status-bar"></div>
+
+  <div class="row">
+    <div class="sidebar">
+      <div class="card">
+        <h2>⚙️ 推理参数</h2>
+        <div class="num-row">
+          <div class="num-field">
+            <label class="field-label">置信度</label>
+            <input type="number" id="conf" value="0.35" min="0.01" max="1" step="0.01">
+          </div>
+          <div class="num-field">
+            <label class="field-label">IOU</label>
+            <input type="number" id="iou" value="0.45" min="0.01" max="1" step="0.01">
+          </div>
+          <div class="num-field" id="interval-wrap">
+            <label class="field-label">间隔 ms</label>
+            <input type="number" id="interval" value="500" min="100" max="10000" step="50">
+          </div>
+        </div>
+        <label class="field-label">额外提示词</label>
+        <input type="text" id="prompt-input" placeholder="person, ship, car ...">
+        <label class="field-label">识别算法</label>
+        <div class="algo-grid" id="algo-grid"><div style="color:#bbb;font-size:13px">加载中…</div></div>
+      </div>
+
+      <!-- Image source -->
+      <div class="card" id="panel-image-src">
+        <h2>📁 上传图片</h2>
+        <div class="drop-zone" id="drop-zone">
+          <input type="file" id="img-input" accept="image/*">
+          <div style="font-size:2rem;margin-bottom:6px">🖼️</div>
+          <p style="color:#888;font-size:13px">点击或拖拽图片</p>
+        </div>
+        <button class="btn btn-primary" id="run-btn" onclick="runImage()">🚀 开始识别</button>
+      </div>
+
+      <!-- Video source -->
+      <div class="card hidden" id="panel-video-src">
+        <h2>🎬 视频源</h2>
+        <label class="field-label">模式</label>
+        <select id="video-mode" onchange="onVideoModeChange()">
+          <option value="camera">浏览器摄像头</option>
+          <option value="mp4">本地 MP4</option>
+          <option value="rtsp">RTSP / 服务端摄像头</option>
+        </select>
+        <div id="mp4-block" class="hidden">
+          <label class="field-label">选择视频文件</label>
+          <input type="file" id="mp4-input" accept="video/*">
+        </div>
+        <div id="rtsp-block" class="hidden">
+          <label class="field-label">源地址</label>
+          <input type="text" id="rtsp-input" placeholder="rtsp://user:pass@host:554/stream 或 0">
+          <p class="mode-hint">填 RTSP URL，或填摄像头序号（如 <code>0</code>）。由<strong>算力机</strong>侧 OpenCV 拉流。</p>
+        </div>
+        <p class="mode-hint" id="camera-hint">使用本机浏览器摄像头，前端抽帧经 WebSocket 推给服务端画框。</p>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="stream-start" onclick="startStream()">▶ 开始</button>
+          <button class="btn btn-stop" id="stream-stop" onclick="stopStream()" disabled>■ 停止</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="card" id="panel-image-result">
+        <h2>🖼️ 识别结果</h2>
+        <div id="image-container">
+          <div class="placeholder">上传图片后显示带框结果</div>
+        </div>
+      </div>
+
+      <div class="card hidden" id="panel-live-result">
+        <h2>📺 实时画面</h2>
+        <div id="live-container">
+          <div class="placeholder">点击「开始」后显示实时画框画面</div>
+          <div class="hud hidden" id="live-hud"></div>
+        </div>
+        <video id="src-video" playsinline muted></video>
+        <video id="src-cam" playsinline muted autoplay></video>
+        <canvas id="grab-canvas" class="hidden"></canvas>
+      </div>
+
+      <div class="card">
+        <h2>📋 检测列表</h2>
+        <div id="prompts-row" class="hidden" style="margin-bottom:10px">
+          <span style="font-size:12px;color:#888">提示词:</span>
+          <span id="prompts-tags"></span>
+        </div>
+        <div id="det-table-wrap"><div style="color:#bbb;text-align:center;padding:24px">暂无结果</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let currentTab = 'image';
+  let ws = null;
+  let streaming = false;
+  let pushTimer = null;
+  let mediaStream = null;
+  let busyClient = false;
+
+  const COLORS = ['#00c853','#2962ff','#d50000','#ff6d00','#aa00ff','#00b8d4','#c51162','#64dd17'];
+  const labelColorMap = {};
+  let colorIdx = 0;
+  function colorFor(label) {
+    if (!labelColorMap[label]) labelColorMap[label] = COLORS[colorIdx++ % COLORS.length];
+    return labelColorMap[label];
+  }
+  function confColor(c) {
+    if (c >= 0.7) return '#43a047';
+    if (c >= 0.4) return '#fb8c00';
+    return '#e53935';
+  }
+
+  function switchTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+    document.getElementById('panel-image-src').classList.toggle('hidden', tab !== 'image');
+    document.getElementById('panel-image-result').classList.toggle('hidden', tab !== 'image');
+    document.getElementById('panel-video-src').classList.toggle('hidden', tab !== 'video');
+    document.getElementById('panel-live-result').classList.toggle('hidden', tab !== 'video');
+    document.getElementById('interval-wrap').style.display = tab === 'video' ? '' : 'none';
+    if (tab !== 'video') stopStream();
+  }
+
+  function onVideoModeChange() {
+    const mode = document.getElementById('video-mode').value;
+    document.getElementById('mp4-block').classList.toggle('hidden', mode !== 'mp4');
+    document.getElementById('rtsp-block').classList.toggle('hidden', mode !== 'rtsp');
+    document.getElementById('camera-hint').classList.toggle('hidden', mode !== 'camera');
+  }
+
+  // drag-drop image
+  const dropZone = document.getElementById('drop-zone');
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); });
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    const f = e.dataTransfer.files[0];
+    if (f && f.type.startsWith('image/')) document.getElementById('img-input').files = e.dataTransfer.files;
+  });
+
+  fetch('/capabilities').then(r => r.json()).then(data => {
+    const grid = document.getElementById('algo-grid');
+    const algos = data.algorithms || [];
+    if (!algos.length) { grid.innerHTML = '<div style="color:#bbb">无可用算法</div>'; return; }
+    grid.innerHTML = algos.map(a => `
+      <label class="algo-chip">
+        <input type="checkbox" name="algo" value="${a.code}" ${a.code==='DET_PERSON'?'checked':''}>
+        <div>
+          <div class="chip-name">${a.name}</div>
+          <div class="chip-code">${a.code}</div>
+          <span class="chip-stage stage-${a.stage}">${a.stage==='detect'?'目标检测':'行为分析'}</span>
+        </div>
+      </label>`).join('');
+  }).catch(() => {
+    document.getElementById('algo-grid').innerHTML = '<div style="color:#e74c3c">加载算法失败</div>';
+  });
+
+  function selectedAlgos() {
+    return [...document.querySelectorAll('input[name=algo]:checked')].map(c => c.value).join(',');
+  }
+  function commonParams() {
+    return {
+      algorithms: selectedAlgos(),
+      prompts: document.getElementById('prompt-input').value.trim(),
+      conf: parseFloat(document.getElementById('conf').value),
+      iou: parseFloat(document.getElementById('iou').value),
+      interval_ms: parseInt(document.getElementById('interval').value, 10) || 500,
+    };
+  }
+
+  function showStatus(msg, type) {
+    const el = document.getElementById('status-bar');
+    el.className = 'status-bar status-' + type;
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+
+  function renderDetections(dets, prompts) {
+    const promptsRow = document.getElementById('prompts-row');
+    if (prompts && prompts.length) {
+      document.getElementById('prompts-tags').innerHTML =
+        prompts.map(p => `<span class="prompt-tag">${p}</span>`).join('');
+      promptsRow.classList.remove('hidden');
+    }
+    const wrap = document.getElementById('det-table-wrap');
+    if (!dets || !dets.length) {
+      wrap.innerHTML = '<div style="color:#bbb;text-align:center;padding:24px">未检测到目标</div>';
+      return;
+    }
+    const rows = dets.map((d, i) => {
+      const pct = Math.round(d.confidence * 100);
+      const [x,y,w,h] = d.bbox.map(v => Math.round(v));
+      const color = colorFor(d.label);
+      return `<tr>
+        <td>${i+1}</td>
+        <td><span style="display:inline-flex;align-items:center;gap:6px">
+          <span style="width:10px;height:10px;border-radius:50%;background:${color}"></span>
+          <strong>${d.label}</strong></span></td>
+        <td><span class="conf-bar"><span class="conf-fill" style="width:${pct}%;background:${confColor(d.confidence)};display:block"></span></span>
+          <span style="color:${confColor(d.confidence)};font-weight:600">${pct}%</span></td>
+        <td class="bbox-mono">[${x}, ${y}, ${w}, ${h}]</td>
+      </tr>`;
+    }).join('');
+    wrap.innerHTML = `<table>
+      <thead><tr><th>#</th><th>类别</th><th>置信度</th><th>bbox</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  async function runImage() {
+    const fileInput = document.getElementById('img-input');
+    if (!fileInput.files[0]) { showStatus('请先选择图片', 'error'); return; }
+    const btn = document.getElementById('run-btn');
+    btn.disabled = true;
+    showStatus('⏳ 推理中…', 'loading');
+    const p = commonParams();
+    const fd = new FormData();
+    fd.append('image', fileInput.files[0]);
+    if (p.algorithms) fd.append('algorithms', p.algorithms);
+    if (p.prompts) fd.append('prompts', p.prompts);
+    fd.append('conf', p.conf);
+    fd.append('iou', p.iou);
+    try {
+      const t0 = Date.now();
+      const resp = await fetch('/preview/image', { method: 'POST', body: fd });
+      const elapsed = Date.now() - t0;
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+        showStatus('❌ ' + (err.detail || resp.statusText), 'error');
+        return;
+      }
+      const result = await resp.json();
+      showStatus(`✅ ${result.total} 个目标 · ${elapsed} ms`, 'success');
+      document.getElementById('image-container').innerHTML =
+        `<img id="result-img" src="data:image/jpeg;base64,${result.annotated_image}" alt="result">`;
+      renderDetections(result.detections, result.prompts_used);
+    } catch (e) {
+      showStatus('❌ ' + e.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${location.host}/preview/stream`;
+  }
+
+  function ensureWs() {
+    return new Promise((resolve, reject) => {
+      if (ws && ws.readyState === WebSocket.OPEN) { resolve(ws); return; }
+      ws = new WebSocket(wsUrl());
+      ws.onopen = () => resolve(ws);
+      ws.onerror = () => reject(new Error('WebSocket 连接失败'));
+      ws.onclose = () => {
+        if (streaming) showStatus('连接已断开', 'error');
+      };
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        handleWsMessage(msg);
+      };
+    });
+  }
+
+  function handleWsMessage(msg) {
+    if (msg.op === 'result') {
+      busyClient = false;
+      const container = document.getElementById('live-container');
+      let img = document.getElementById('live-img');
+      if (!img) {
+        container.innerHTML = '<img id="live-img" alt="live"><div class="hud" id="live-hud"></div>';
+        img = document.getElementById('live-img');
+      }
+      img.src = 'data:image/jpeg;base64,' + msg.annotated_image;
+      const hud = document.getElementById('live-hud');
+      hud.classList.remove('hidden');
+      hud.textContent = `#${msg.frame} · ${msg.total} boxes · ${msg.ms} ms`;
+      renderDetections(msg.detections, msg.prompts_used);
+      showStatus(`实时 · frame ${msg.frame} · ${msg.total} 目标 · ${msg.ms} ms`, 'success');
+    } else if (msg.op === 'dropped') {
+      busyClient = false;
+    } else if (msg.op === 'error') {
+      busyClient = false;
+      showStatus('❌ ' + msg.detail, 'error');
+    } else if (msg.op === 'status' || msg.op === 'ready') {
+      showStatus(msg.message || msg.op, 'info');
+    }
+  }
+
+  async function startStream() {
+    const mode = document.getElementById('video-mode').value;
+    const p = commonParams();
+    document.getElementById('stream-start').disabled = true;
+    document.getElementById('stream-stop').disabled = false;
+    streaming = true;
+    busyClient = false;
+
+    try {
+      await ensureWs();
+      ws.send(JSON.stringify({ op: 'config', ...p }));
+
+      if (mode === 'rtsp') {
+        const source = document.getElementById('rtsp-input').value.trim();
+        if (!source) throw new Error('请填写 RTSP URL 或摄像头序号');
+        ws.send(JSON.stringify({ op: 'start_source', source, ...p }));
+        showStatus('服务端拉流中…', 'loading');
+        return;
+      }
+
+      if (mode === 'camera') {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false
+        });
+        const cam = document.getElementById('src-cam');
+        cam.srcObject = mediaStream;
+        await cam.play();
+        startPushLoop(() => grabFromVideo(cam));
+        showStatus('摄像头推流中…', 'info');
+        return;
+      }
+
+      if (mode === 'mp4') {
+        const file = document.getElementById('mp4-input').files[0];
+        if (!file) throw new Error('请选择 MP4 文件');
+        const video = document.getElementById('src-video');
+        video.src = URL.createObjectURL(file);
+        video.loop = true;
+        await video.play();
+        startPushLoop(() => grabFromVideo(video));
+        showStatus('本地视频推流中…', 'info');
+        return;
+      }
+    } catch (e) {
+      showStatus('❌ ' + e.message, 'error');
+      stopStream();
+    }
+  }
+
+  function grabFromVideo(videoEl) {
+    if (!videoEl.videoWidth) return null;
+    const canvas = document.getElementById('grab-canvas');
+    const maxW = 1280;
+    let w = videoEl.videoWidth, h = videoEl.videoHeight;
+    if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(videoEl, 0, 0, w, h);
+    return canvas.toDataURL('image/jpeg', 0.85);
+  }
+
+  function startPushLoop(grabFn) {
+    clearInterval(pushTimer);
+    const interval = parseInt(document.getElementById('interval').value, 10) || 500;
+    pushTimer = setInterval(() => {
+      if (!streaming || !ws || ws.readyState !== WebSocket.OPEN) return;
+      if (busyClient) return;
+      const dataUrl = grabFn();
+      if (!dataUrl) return;
+      busyClient = true;
+      ws.send(JSON.stringify({ op: 'frame', image: dataUrl }));
+    }, interval);
+  }
+
+  async function stopStream() {
+    streaming = false;
+    busyClient = false;
+    clearInterval(pushTimer);
+    pushTimer = null;
+    if (mediaStream) {
+      mediaStream.getTracks().forEach(t => t.stop());
+      mediaStream = null;
+    }
+    const video = document.getElementById('src-video');
+    video.pause();
+    if (video.src) { URL.revokeObjectURL(video.src); video.removeAttribute('src'); }
+    const cam = document.getElementById('src-cam');
+    cam.srcObject = null;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({ op: 'stop' })); } catch {}
+    }
+    document.getElementById('stream-start').disabled = false;
+    document.getElementById('stream-stop').disabled = true;
+  }
+
+  // default: hide interval on image tab
+  document.getElementById('interval-wrap').style.display = 'none';
+  onVideoModeChange();
+</script>
+</body>
+</html>
