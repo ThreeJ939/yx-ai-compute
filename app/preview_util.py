@@ -64,18 +64,34 @@ def resolve_prompts(algorithms: str | None, prompts: str | None) -> list[str]:
     )
 
 
+# BGR color for behavior-confirmed detections (bold orange)
+_BEHAVIOR_COLOR_BGR = (0, 120, 255)
+
+
 def draw_bboxes(image_bgr, detections: list):
-    """Draw bounding boxes + labels on a copy of the image."""
+    """Draw bounding boxes + labels on a copy of the image.
+
+    Detections with a ``behavior`` attribute are highlighted in orange with a
+    thicker border and an extra behavior badge.
+    """
     import cv2  # noqa: PLC0415
 
     img = image_bgr.copy()
     for det in detections:
+        behavior = getattr(det, "behavior", None)
         x, y, w, h = det.bbox
         x1, y1, x2, y2 = int(x), int(y), int(x + w), int(y + h)
-        color = _label_color(det.label)
-        cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+        color = _BEHAVIOR_COLOR_BGR if behavior else _label_color(det.label)
+        thickness = 3 if behavior else 2
 
-        text = f"{det.label}  {det.confidence:.2f}"
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
+
+        # Build label text: "person [fishing]  0.91"
+        if behavior:
+            text = f"{det.label} [{behavior}]  {det.confidence:.2f}"
+        else:
+            text = f"{det.label}  {det.confidence:.2f}"
+
         font = cv2.FONT_HERSHEY_SIMPLEX
         scale = max(0.45, min(0.65, img.shape[1] / 1200))
         thick = 1
@@ -128,12 +144,16 @@ def maybe_resize(image_bgr, max_width: int):
 
 
 def detections_to_json(detections: list) -> list[dict]:
-    return [
-        {
+    out = []
+    for d in detections:
+        item: dict = {
             "label": d.label,
             "object_type": d.object_type,
             "confidence": round(d.confidence, 4),
             "bbox": [round(v, 1) for v in d.bbox],
         }
-        for d in detections
-    ]
+        behavior = getattr(d, "behavior", None)
+        if behavior:
+            item["behavior"] = behavior
+        out.append(item)
+    return out

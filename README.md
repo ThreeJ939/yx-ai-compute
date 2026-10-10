@@ -49,10 +49,15 @@ python -m app.main
 | `DEVICE` | `cuda` 或 `cpu` |
 | `PREVIEW_ENABLED` | 是否启用 `/preview` 与 `/preview/stream` |
 | `PREVIEW_INTERVAL_MS` | 视频流默认抽帧间隔（CPU 建议 800–2000） |
-| `CONF_THRESHOLD` | 检测置信度阈值 |
-| `YOLO_TILED` | 是否滑窗推理（默认 true，利于远景/小目标） |
+| `LLM_ENABLED` | 是否启用 VLM 行为增强（`BEH_FISHING` / `BEH_FIGHTING` 等） |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | OpenAI 兼容多模态接口 |
+| `LLM_PROMPTS_PATH` | 行为提示词 YAML（默认 `config/llm_prompts.yaml`） |
+| `YOLO_CONF` / `YOLO_IOU` | YOLO-World（world）检测置信度与 NMS IOU |
+| `YOLO_TILED` | world 滑窗推理（默认 true，利于远景/小目标） |
 | `YOLO_TILE_SIZE` / `YOLO_TILE_OVERLAP` | 切块边长与重叠率（对齐 yolo-world-demo） |
 | `YOLO_IMGSZ` | 单块/整图 `predict` 的 imgsz |
+| `FIRE_SMOKE_CONF` / `FIRE_SMOKE_IOU` | fire_smoke 独立阈值（0=沿用 YOLO_CONF/IOU） |
+| `FIRE_SMOKE_TILED` / `TILE_SIZE` / `TILE_OVERLAP` | fire_smoke 独立滑窗 |
 
 图宽或高大于 `YOLO_TILE_SIZE` 时走滑窗 + 按类 NMS；否则整图一次推理。
 
@@ -146,9 +151,22 @@ docker run --rm \
 4. recognition 侧出现 `RecognitionEvent`；有目标时 `algorithmNum>0`
 5. `curl http://localhost:18100/health` 与 `/capabilities`
 
+## LLM 行为增强（同步）
+
+开启后，`stage=behavior` 的算法在 YOLO 出框后会裁剪送 VLM，再一次回写 Kafka（`stage=behavior`，`detections[].behavior`）。
+
+```bash
+# .env
+LLM_ENABLED=true
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_API_KEY=sk-xxx
+LLM_MODEL=qwen-vl-plus
+```
+
+提示词与裁剪策略见 [`config/llm_prompts.yaml`](config/llm_prompts.yaml)。超时/失败时降级为 YOLO 结果（`applied=false`）。
+
 ## 本期不做
 
 - 改 Java 两阶段幂等 / 消费 detections
-- 真实 LLM/VLM
 - Nacos / 网关 Ability
 - 人员专用闭集模型

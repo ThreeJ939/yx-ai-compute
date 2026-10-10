@@ -78,7 +78,7 @@ def _parse_args() -> argparse.Namespace:
         "--conf",
         type=float,
         default=None,
-        help="Override CONF_THRESHOLD from .env",
+        help="Override YOLO_CONF from .env",
     )
     p.add_argument(
         "--no-tile",
@@ -154,7 +154,7 @@ def main() -> int:
         return 1
 
     settings = Settings()
-    conf = args.conf if args.conf is not None else settings.conf_threshold
+    conf = args.conf if args.conf is not None else settings.yolo_conf
     tiled = False if args.no_tile else settings.yolo_tiled
 
     algorithm_types = [c.strip() for c in args.algorithms.split(",") if c.strip()]
@@ -244,7 +244,7 @@ def main() -> int:
             frame,
             prompts=prompts,
             conf=conf,
-            iou=settings.iou_threshold,
+            iou=settings.yolo_iou,
         )
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
         inferred += 1

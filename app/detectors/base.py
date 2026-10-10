@@ -14,6 +14,8 @@ class RawDetection:
     # xywh pixel coordinates
     bbox: list[float]
     prompt: str = ""
+    # Optional LLM/VLM behavior label (e.g. fishing / fighting)
+    behavior: str | None = None
 
 
 @dataclass

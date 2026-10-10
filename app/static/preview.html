@@ -107,6 +107,18 @@
     .conf-fill { height: 100%; }
     .hidden { display: none !important; }
     .mode-hint { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.5; }
+    .vlm-crops-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 12px;
+    }
+    .vlm-crop-card {
+      border: 1px solid #e0e6ed; border-radius: 8px; overflow: hidden; background: #fafbfc;
+    }
+    .vlm-crop-card img { width: 100%; display: block; background: #111; max-height: 180px; object-fit: contain; }
+    .vlm-crop-meta { padding: 8px; font-size: 11px; color: #555; line-height: 1.45; }
+    .vlm-crop-meta strong { color: #333; }
+    .vlm-pos { color: #2e7d32; font-weight: 700; }
+    .vlm-neg { color: #c62828; font-weight: 600; }
     @media (max-width: 800px) { .sidebar { max-width: 100%; } }
   </style>
 </head>
@@ -131,12 +143,12 @@
         <h2>⚙️ 推理参数</h2>
         <div class="num-row">
           <div class="num-field">
-            <label class="field-label">置信度</label>
-            <input type="number" id="conf" value="0.35" min="0.01" max="1" step="0.01">
+            <label class="field-label">YOLO 置信度</label>
+            <input type="number" id="conf" value="0.35" min="0.01" max="1" step="0.01" title="覆盖 YOLO_CONF（world）；fire_smoke 有独立 FIRE_SMOKE_CONF 时以 .env 为准">
           </div>
           <div class="num-field">
-            <label class="field-label">IOU</label>
-            <input type="number" id="iou" value="0.45" min="0.01" max="1" step="0.01">
+            <label class="field-label">YOLO IOU</label>
+            <input type="number" id="iou" value="0.45" min="0.01" max="1" step="0.01" title="覆盖 YOLO_IOU（world）；fire_smoke 有独立 FIRE_SMOKE_IOU 时以 .env 为准">
           </div>
           <div class="num-field" id="interval-wrap">
             <label class="field-label">间隔 ms</label>
@@ -212,6 +224,11 @@
           <span id="prompts-tags"></span>
         </div>
         <div id="det-table-wrap"><div style="color:#bbb;text-align:center;padding:24px">暂无结果</div></div>
+      </div>
+
+      <div class="card" id="vlm-crops-card">
+        <h2>✂️ 发给 VLM 的裁剪图</h2>
+        <div id="vlm-crops-wrap"><div style="color:#bbb;text-align:center;padding:24px">行为增强后显示裁剪图</div></div>
       </div>
     </div>
   </div>
@@ -317,12 +334,15 @@
     const rows = dets.map((d, i) => {
       const pct = Math.round(d.confidence * 100);
       const [x,y,w,h] = d.bbox.map(v => Math.round(v));
-      const color = colorFor(d.label);
+      const color = d.behavior ? '#e65c00' : colorFor(d.label);
+      const behaviorBadge = d.behavior
+        ? `<span style="margin-left:6px;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:700;background:#fff3e0;color:#e65c00;border:1px solid #ffb74d">🤖 ${d.behavior}</span>`
+        : '';
       return `<tr>
         <td>${i+1}</td>
-        <td><span style="display:inline-flex;align-items:center;gap:6px">
+        <td><span style="display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap">
           <span style="width:10px;height:10px;border-radius:50%;background:${color}"></span>
-          <strong>${d.label}</strong></span></td>
+          <strong>${d.label}</strong>${behaviorBadge}</span></td>
         <td><span class="conf-bar"><span class="conf-fill" style="width:${pct}%;background:${confColor(d.confidence)};display:block"></span></span>
           <span style="color:${confColor(d.confidence)};font-weight:600">${pct}%</span></td>
         <td class="bbox-mono">[${x}, ${y}, ${w}, ${h}]</td>
@@ -331,6 +351,33 @@
     wrap.innerHTML = `<table>
       <thead><tr><th>#</th><th>类别</th><th>置信度</th><th>bbox</th></tr></thead>
       <tbody>${rows}</tbody></table>`;
+  }
+
+  function renderVlmCrops(crops) {
+    const wrap = document.getElementById('vlm-crops-wrap');
+    if (!crops || !crops.length) {
+      wrap.innerHTML = '<div style="color:#bbb;text-align:center;padding:24px">本次未产生 VLM 裁剪图（未开 LLM / 无行为算法 / 无匹配框）</div>';
+      return;
+    }
+    wrap.innerHTML = `<div class="vlm-crops-grid">${crops.map((c, i) => {
+      const bbox = (c.bbox_xywh || []).map(v => Math.round(v)).join(', ');
+      const verdict = (c.positive === true)
+        ? `<span class="vlm-pos">positive · ${c.label || '-'} · ${Math.round((c.confidence||0)*100)}%</span>`
+        : (c.positive === false)
+          ? `<span class="vlm-neg">negative · ${Math.round((c.confidence||0)*100)}%</span>`
+          : '<span style="color:#999">无判定 / 调用失败</span>';
+      const img = c.image_b64
+        ? `<img src="data:image/jpeg;base64,${c.image_b64}" alt="vlm-crop-${i}">`
+        : '<div style="padding:24px;color:#999;text-align:center">无图</div>';
+      return `<div class="vlm-crop-card">${img}
+        <div class="vlm-crop-meta">
+          <div><strong>#${i+1}</strong> ${c.algorithm_code || ''}</div>
+          <div>det ${JSON.stringify(c.det_indices || [])}</div>
+          <div class="bbox-mono">[${bbox}]</div>
+          <div>${verdict}</div>
+        </div>
+      </div>`;
+    }).join('')}</div>`;
   }
 
   async function runImage() {
@@ -356,10 +403,14 @@
         return;
       }
       const result = await resp.json();
-      showStatus(`✅ ${result.total} 个目标 · ${elapsed} ms`, 'success');
+      const stageTag = result.llm_applied
+        ? ' &nbsp;<span style="background:#fff3e0;color:#e65c00;border:1px solid #ffb74d;border-radius:10px;padding:1px 8px;font-size:12px">🤖 LLM增强</span>'
+        : '';
+      showStatus(`✅ ${result.total} 个目标 · ${elapsed} ms${stageTag}`, 'success');
       document.getElementById('image-container').innerHTML =
         `<img id="result-img" src="data:image/jpeg;base64,${result.annotated_image}" alt="result">`;
       renderDetections(result.detections, result.prompts_used);
+      renderVlmCrops(result.vlm_crops);
     } catch (e) {
       showStatus('❌ ' + e.message, 'error');
     } finally {
@@ -401,9 +452,14 @@
       img.src = 'data:image/jpeg;base64,' + msg.annotated_image;
       const hud = document.getElementById('live-hud');
       hud.classList.remove('hidden');
-      hud.textContent = `#${msg.frame} · ${msg.total} boxes · ${msg.ms} ms`;
+      const llmTag = msg.llm_applied ? ' 🤖LLM' : '';
+      hud.textContent = `#${msg.frame} · ${msg.total} boxes · ${msg.ms} ms${llmTag}`;
       renderDetections(msg.detections, msg.prompts_used);
-      showStatus(`实时 · frame ${msg.frame} · ${msg.total} 目标 · ${msg.ms} ms`, 'success');
+      renderVlmCrops(msg.vlm_crops);
+      const stageTagWs = msg.llm_applied
+        ? ' &nbsp;<span style="background:#fff3e0;color:#e65c00;border:1px solid #ffb74d;border-radius:10px;padding:1px 8px;font-size:12px">🤖 LLM增强</span>'
+        : '';
+      showStatus(`实时 · frame ${msg.frame} · ${msg.total} 目标 · ${msg.ms} ms${stageTagWs}`, 'success');
     } else if (msg.op === 'dropped') {
       busyClient = false;
     } else if (msg.op === 'error') {

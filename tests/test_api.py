@@ -15,7 +15,7 @@ def test_health_and_capabilities():
     body = caps.json()
     codes = {a["code"] for a in body["algorithms"]}
     assert "ENGINEERING_VEHICLE_DETECTION" in codes
-    assert "FISHING_DETECTION" in codes
+    assert "BEH_FISHING" in codes
 
 
 def test_preview_page_and_root_redirect():

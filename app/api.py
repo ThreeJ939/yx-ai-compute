@@ -19,7 +19,7 @@ from app.preview_util import (
     resolve_prompts,
 )
 from app.preview_ws import preview_stream_endpoint
-from app.registry import list_capabilities
+from app.registry import get_spec, list_capabilities, plan_request
 
 if TYPE_CHECKING:
     from app.orchestrator import Orchestrator
@@ -103,19 +103,33 @@ def create_app(settings: Settings, orchestrator: "Orchestrator | None" = None) -
         if not image_bytes:
             raise HTTPException(status_code=400, detail="Empty image file")
 
+        # Parse algorithm codes (needed for multi-backend detect + LLM routing)
+        algo_codes = [a.strip() for a in (algorithms or "").split(",") if a.strip()]
         merged_prompts = resolve_prompts(algorithms, prompts)
-        if not merged_prompts:
+        # Dedicated backends (e.g. fire_smoke) may have empty world prompts.
+        if not algo_codes and not merged_prompts:
             raise HTTPException(
                 status_code=400,
-                detail="No prompts resolved; check algorithms / prompts params",
+                detail="No algorithms/prompts resolved; check algorithms / prompts params",
             )
+        if algo_codes:
+            from app.registry import plan_request  # noqa: PLC0415
 
+            plan = plan_request(algo_codes)
+            if not plan.known and not merged_prompts:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown algorithms: {plan.unknown}",
+                )
+
+        # ── Multi-backend detection ───────────────────────────────────────────
         try:
             batch = await orchestrator.detect_direct(
                 image_bytes=image_bytes,
-                prompts=merged_prompts,
+                prompts=merged_prompts or None,
                 conf=conf,
                 iou=iou,
+                algorithm_codes=algo_codes or None,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -123,10 +137,28 @@ def create_app(settings: Settings, orchestrator: "Orchestrator | None" = None) -
             logger.exception("Preview inference error")
             raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
 
+        # ── LLM behavior enhancement (if enabled and algo has stage=behavior) ─
         image_bgr = decode_image_bytes(image_bytes)
         if image_bgr is None:
             raise HTTPException(status_code=400, detail="Cannot decode image")
-        annotated = draw_bboxes(image_bgr, batch.detections)
+
+        detections = batch.detections
+        llm_applied = False
+        vlm_crops: list = []
+        if settings.llm_enabled and algo_codes:
+            behavior_codes = [
+                c for c in algo_codes
+                if (spec := get_spec(c)) is not None and spec.stage == "behavior"
+            ]
+            if behavior_codes:
+                detections, llm_applied, vlm_crops = await orchestrator.enhance_direct(
+                    image_bgr=image_bgr,
+                    detections=detections,
+                    algorithm_codes=behavior_codes,
+                )
+
+        # ── Draw and encode ───────────────────────────────────────────────────
+        annotated = draw_bboxes(image_bgr, detections)
         try:
             annotated_b64 = encode_jpeg_b64(annotated, quality=90)
         except RuntimeError as exc:
@@ -134,10 +166,13 @@ def create_app(settings: Settings, orchestrator: "Orchestrator | None" = None) -
 
         return JSONResponse(
             {
-                "total": len(batch.detections),
-                "detections": detections_to_json(batch.detections),
+                "total": len(detections),
+                "detections": detections_to_json(detections),
                 "prompts_used": merged_prompts,
                 "annotated_image": annotated_b64,
+                "llm_applied": llm_applied,
+                "stage": "behavior" if llm_applied else "yolo",
+                "vlm_crops": vlm_crops,
             }
         )
 

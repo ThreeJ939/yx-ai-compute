@@ -233,9 +233,10 @@ class PreviewStreamSession:
     async def _infer_bgr(self, image_bgr) -> dict[str, Any]:
         import cv2  # noqa: PLC0415
 
+        algo_codes = [a.strip() for a in (self.algorithms or "").split(",") if a.strip()]
         prompts = resolve_prompts(self.algorithms, self.prompts)
-        if not prompts:
-            raise ValueError("No prompts resolved")
+        if not algo_codes and not prompts:
+            raise ValueError("No algorithms/prompts resolved")
 
         resized, _ = maybe_resize(image_bgr, self.max_width)
         ok, buf = cv2.imencode(".jpg", resized, [cv2.IMWRITE_JPEG_QUALITY, 92])
@@ -246,25 +247,52 @@ class PreviewStreamSession:
         t0 = time.perf_counter()
         batch = await self.orch.detect_direct(
             image_bytes=jpeg_bytes,
-            prompts=prompts,
+            prompts=prompts or None,
             conf=self.conf,
             iou=self.iou,
+            algorithm_codes=algo_codes or None,
         )
+
+        # ── LLM behavior enhancement (stream) ────────────────────────────────
+        detections = batch.detections
+        llm_applied = False
+        vlm_crops: list = []
+        if self.settings.llm_enabled and self.algorithms:
+            from app.registry import get_spec  # noqa: PLC0415
+
+            algo_codes = [a.strip() for a in self.algorithms.split(",") if a.strip()]
+            behavior_codes = [
+                c for c in algo_codes
+                if (spec := get_spec(c)) is not None and spec.stage == "behavior"
+            ]
+            if behavior_codes:
+                # Re-decode resized jpeg to get the same image space as detections
+                resized_bgr = decode_image_bytes(jpeg_bytes)
+                if resized_bgr is not None:
+                    detections, llm_applied, vlm_crops = await self.orch.enhance_direct(
+                        image_bgr=resized_bgr,
+                        detections=detections,
+                        algorithm_codes=behavior_codes,
+                    )
+
         ms = int((time.perf_counter() - t0) * 1000)
 
-        # Re-decode resized jpeg to draw (same space as detections)
+        # ── Draw and encode ───────────────────────────────────────────────────
         drawn_src = decode_image_bytes(jpeg_bytes)
-        annotated = draw_bboxes(drawn_src, batch.detections)
+        annotated = draw_bboxes(drawn_src, detections)
         annotated_b64 = encode_jpeg_b64(annotated, quality=self.jpeg_quality)
 
         self._frame_idx += 1
         return {
             "op": "result",
             "frame": self._frame_idx,
-            "total": len(batch.detections),
-            "detections": detections_to_json(batch.detections),
+            "total": len(detections),
+            "detections": detections_to_json(detections),
             "prompts_used": prompts,
             "annotated_image": annotated_b64,
+            "llm_applied": llm_applied,
+            "stage": "behavior" if llm_applied else "yolo",
+            "vlm_crops": vlm_crops,
             "ms": ms,
         }
 

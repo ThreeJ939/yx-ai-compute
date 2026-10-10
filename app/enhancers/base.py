@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from app.detectors.base import RawDetection
@@ -20,6 +20,8 @@ class EnhanceRequest:
 class EnhanceResult:
     detections: list[RawDetection]
     applied: bool = False
+    # Preview debug: crops sent to VLM (image_b64 + metadata)
+    crops: list[dict[str, Any]] = field(default_factory=list)
 
 
 class BehaviorEnhancer(Protocol):

@@ -9,8 +9,12 @@ import sys
 
 import uvicorn
 
+from pathlib import Path
+
 from app.api import create_app
-from app.config import get_settings
+from app.config import Settings, get_settings
+from app.detectors.yolo_world import YoloWorldDetector
+from app.enhancers.noop import NoopBehaviorEnhancer
 from app.kafka_app import KafkaInferenceApp
 from app.minio_client import MinioImageStore
 from app.orchestrator import Orchestrator
@@ -24,13 +28,86 @@ def _configure_logging(level: str) -> None:
     )
 
 
+def _resolve_weights_path(path_str: str) -> Path | None:
+    """Resolve weights against CWD or repo root (app/../)."""
+    p = Path(path_str)
+    if p.is_file():
+        return p.resolve()
+    root_relative = Path(__file__).resolve().parents[1] / path_str
+    if root_relative.is_file():
+        return root_relative.resolve()
+    return None
+
+
+def _build_detector_registry(settings: Settings, logger: logging.Logger) -> dict:
+    """Assemble backend → Detector map (world always; fire_smoke optional)."""
+    from app.detectors.base import Detector  # noqa: PLC0415
+
+    detectors: dict[str, Detector] = {
+        "world": YoloWorldDetector(
+            weights=settings.yolo_world_weights,
+            device=settings.device,
+            clip_weights=settings.yolo_clip_weights,
+            tiled=settings.yolo_tiled,
+            tile_size=settings.yolo_tile_size,
+            tile_overlap=settings.yolo_tile_overlap,
+            imgsz=settings.yolo_imgsz,
+        )
+    }
+
+    if settings.fire_smoke_enabled:
+        weights_path = _resolve_weights_path(settings.fire_smoke_weights)
+        if weights_path is None:
+            logger.warning(
+                "FIRE_SMOKE_ENABLED=true but weights missing: %s — skipping fire_smoke backend",
+                settings.fire_smoke_weights,
+            )
+        else:
+            from app.detectors.ultralytics_yolo import UltralyticsYoloDetector  # noqa: PLC0415
+
+            detectors["fire_smoke"] = UltralyticsYoloDetector(
+                weights=str(weights_path),
+                device=settings.device,
+                tiled=settings.fire_smoke_tiled,
+                tile_size=settings.fire_smoke_tile_size,
+                tile_overlap=settings.fire_smoke_tile_overlap,
+                imgsz=settings.yolo_imgsz,
+                name="fire_smoke",
+            )
+            logger.info("fire_smoke backend enabled weights=%s", weights_path)
+    else:
+        logger.info("fire_smoke backend disabled (FIRE_SMOKE_ENABLED=false)")
+
+    logger.info("Detector backends registered: %s", sorted(detectors.keys()))
+    return detectors
+
+
 async def _async_main() -> None:
     settings = get_settings()
     _configure_logging(settings.log_level)
     logger = logging.getLogger("app.main")
 
     minio = MinioImageStore(settings)
-    orchestrator = Orchestrator(settings, minio)
+    if settings.llm_enabled:
+        from app.enhancers.llm_vlm import LlmBehaviorEnhancer
+
+        enhancer = LlmBehaviorEnhancer(settings)
+        logger.info(
+            "LLM enhancer enabled model=%s prompts=%s",
+            settings.llm_model,
+            settings.llm_prompts_path,
+        )
+    else:
+        enhancer = NoopBehaviorEnhancer()
+        logger.info("LLM enhancer disabled (NoopBehaviorEnhancer)")
+
+    detector_registry = _build_detector_registry(settings, logger)
+    orchestrator = Orchestrator(
+        settings,
+        minio,
+        detector_registry=detector_registry,
+        enhancer=enhancer,
+    )
 
     async def process(request):
         return await orchestrator.process(request)

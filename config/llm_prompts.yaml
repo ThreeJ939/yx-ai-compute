@@ -1,0 +1,56 @@
+# LLM / VLM prompts for behavior-stage algorithms (OpenAI-compatible vision).
+# Keys must match algorithmTypes codes in app/registry.py.
+#
+# crop:
+#   single_person_expand       — one crop per person bbox (with padding)
+#   multi_person_union         — one crop covering all person bboxes (fighting)
+#   single_fire_smoke_expand   — one crop per fire/smoke bbox
+#   multi_fire_smoke_union     — one crop covering all fire/smoke bboxes
+
+BEH_FISHING:
+  system: >
+    你是安防行为识别助手，只根据图片内容作答，不要编造。
+    你必须只输出一个合法 JSON 对象，不要输出任何解释、分析步骤、列表、markdown 或代码块。
+  user: >
+    判断图中人员是否正在钓鱼（含持竿/抛竿/收线、坐钓、明显渔具操作）。
+    以下情况应判为 false：仅在水边站立或行走、无渔具、手持伞/自拍杆/树枝等非鱼竿、
+    画面模糊无法确认渔具或动作。
+    禁止输出分析过程。唯一合法输出为 JSON 对象，字段固定为：
+    {"positive":true/false,"confidence":0到1的小数,"label":"fishing"}
+  crop: single_person_expand
+  crop_padding: 1
+
+BEH_FIGHTING:
+  system: >
+    你是安防行为识别助手，只根据图片内容作答，不要编造。
+    你必须只输出一个合法 JSON 对象，不要输出任何解释、分析步骤、列表、markdown 或代码块。
+  user: >
+    判断图中是否存在人员打架/肢体冲突。
+    禁止输出分析过程。唯一合法输出为 JSON 对象，字段固定为：
+    {"positive":true或false,"confidence":0到1的小数,"label":"fighting"}
+  crop: multi_person_union
+  crop_padding: 0.2
+
+BEH_SMOKING:
+  system: >
+    你是安防行为识别助手，只根据图片内容作答，不要编造。
+    你必须只输出一个合法 JSON 对象，不要输出任何解释、分析步骤、列表、markdown 或代码块。
+  user: >
+    判断图中人员是否正在抽烟（含叼烟、持烟、正在吐烟等）。
+    以下情况应判为 false：仅手势、无法确认是否为烟、画面模糊看不清。
+    禁止输出分析过程。唯一合法输出：
+    {"positive":true或false,"confidence":0到1的小数,"label":"smoking"}
+  crop: single_person_expand
+  crop_padding: 0.3
+
+BEH_FIRE_SMOKE:
+  system: >
+    你是安防视觉助手，只根据图片内容作答，不要编造。
+    你必须只输出一个合法 JSON 对象，不要输出任何解释、分析步骤、列表、markdown 或代码块。
+  user: >
+    判断图中是否存在真实的明火或烟雾（含燃烧烟柱、浓烟、可见火焰）。
+    以下情况应判为 false：车灯/反光、夕阳、雾霾、水蒸汽、白云。
+    禁止输出分析过程。唯一合法输出：
+    {"positive":true或false,"confidence":0到1的小数,"label":"fire_or_smoke"}
+  crop: single_fire_smoke_expand
+  crop_padding: 0.2

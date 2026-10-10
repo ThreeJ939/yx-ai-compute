@@ -57,18 +57,17 @@ def build_result(
         image_url.append(image_urls.get(code, ""))
 
         for det in matched:
-            detection_items.append(
-                DetectionItem.model_validate(
-                    {
-                        "detId": _new_det_id(),
-                        "objectType": det.object_type,
-                        "confidence": det.confidence,
-                        "bbox": list(det.bbox),
-                        "label": det.label,
-                        "algorithmType": code,
-                    }
-                )
-            )
+            item: dict = {
+                "detId": _new_det_id(),
+                "objectType": det.object_type,
+                "confidence": det.confidence,
+                "bbox": list(det.bbox),
+                "label": det.label,
+                "algorithmType": code,
+            }
+            if det.behavior:
+                item["behavior"] = det.behavior
+            detection_items.append(DetectionItem.model_validate(item))
 
     ts = request.timestamp if request.timestamp else int(time.time() * 1000)
     return AiInferenceResult.model_validate(
