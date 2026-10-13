@@ -17,7 +17,7 @@ Consumer group (recognition result): configured in `ai-recognition.kafka.consume
   "requestId": "abc123",
   "taskId": "task-1",
   "deviceId": "cam-01",
-  "algorithmTypes": ["ENGINEERING_VEHICLE_DETECTION", "FISHING_DETECTION"],
+  "algorithmTypes": ["ENGINEERING_VEHICLE_DETECTION", "BEH_FISHING"],
   "bucket": "detection-frames",
   "imageObjectKey": "frames/task-1/xxx.jpg",
   "timestamp": 1710000000000,
@@ -28,37 +28,57 @@ Consumer group (recognition result): configured in `ai-recognition.kafka.consume
 
 Image bytes are **not** in the message. Compute downloads via MinIO `bucket` + `imageObjectKey`.
 
-## Result (`AiInferenceResult`) — Java-compatible slots
+## Result (`AiInferenceResult`) — nested per algorithm
 
-Recognition `AiResultConsumer` requires aligned lists with size > 0:
+Recognition `AiResultConsumer` requires `results` non-empty:
 
 ```json
 {
   "requestId": "abc123",
   "taskId": "task-1",
   "deviceId": "cam-01",
-  "algorithmType": ["ENGINEERING_VEHICLE_DETECTION", "FISHING_DETECTION"],
-  "algorithmNum": [2, 1],
-  "imageUrl": ["", ""],
   "timestamp": 1710000000500,
-  "detections": [
+  "results": [
     {
-      "detId": "a1b2c3d4e5f6",
-      "objectType": "excavator",
-      "label": "excavator",
-      "confidence": 0.91,
-      "bbox": [100.0, 80.0, 200.0, 150.0],
-      "algorithmType": "ENGINEERING_VEHICLE_DETECTION"
+      "algorithmType": "ENGINEERING_VEHICLE_DETECTION",
+      "algorithmNum": 2,
+      "imageUrl": "https://minio/.../abc123.jpg",
+      "detections": [
+        {
+          "detId": "a1b2c3d4e5f6",
+          "objectType": "excavator",
+          "label": "excavator",
+          "confidence": 0.91,
+          "bbox": [100.0, 80.0, 200.0, 150.0]
+        }
+      ]
+    },
+    {
+      "algorithmType": "BEH_FISHING",
+      "algorithmNum": 1,
+      "imageUrl": "",
+      "detections": [
+        {
+          "detId": "c3d4e5f6a1b2",
+          "objectType": "person",
+          "label": "person",
+          "confidence": 0.82,
+          "bbox": [50.0, 60.0, 80.0, 200.0],
+          "behavior": "fishing"
+        }
+      ]
     }
-  ],
-  "stage": "yolo",
-  "partial": false
+  ]
 }
 ```
 
-- `bbox`: `[x, y, width, height]` in pixels  
-- `detections` / `stage` / `partial`: forward-compatible; current Java DTO ignores unknown fields  
-- Phase-2 may emit two results per `requestId` (`partial=true` then `false`); Java must change idempotency first  
+- `bbox`: `[x, y, width, height]` in pixels
+- `imageUrl`: original inference frame (`http(s)://{MINIO_ENDPOINT}/{bucket}/{imageObjectKey}`); same for all slots. Not an annotated image — recognition draws boxes and uploads alarm snapshots itself
+- `DET_*` / pure detect codes: always present in `results` with YOLO boxes
+- `BEH_*` + LLM disabled: slot omitted entirely (no behavior alarm)
+- `BEH_*` + LLM enabled: only detections with non-empty `behavior`; empty confirmed set still emits `algorithmNum=0`
+- YOLO intermediate / preview results go via WebSocket, not this Kafka topic
+- No `stage` / `partial` fields
 
 ## Failure behavior
 
@@ -67,8 +87,8 @@ Recognition `AiResultConsumer` requires aligned lists with size > 0:
 | Poison / invalid JSON | Log, commit offset (skip) |
 | Missing required fields | Log, commit |
 | MinIO transient error | Log, **do not** commit (retry) |
-| Decode / infer error | Publish zero `algorithmNum` slots, commit |
+| Decode / infer error | Publish zero `algorithmNum` slots (skip BEH_* if LLM off), commit |
 
-## Algorithm codes (phase-1)
+## Algorithm codes
 
 See `GET /capabilities` or `app/registry.py`.

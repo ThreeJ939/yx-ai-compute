@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AiInferenceRequest(BaseModel):
@@ -45,7 +45,7 @@ class AiInferenceRequest(BaseModel):
 
 
 class DetectionItem(BaseModel):
-    """Aligned with AiDetectionItem; extended with detId for future two-phase merge."""
+    """Aligned with AiDetectionItem; nested under AlgorithmResult."""
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -54,8 +54,18 @@ class DetectionItem(BaseModel):
     confidence: float
     bbox: list[float]
     label: str
-    algorithm_type: str | None = Field(default=None, alias="algorithmType")
     behavior: str | None = None
+
+
+class AlgorithmResult(BaseModel):
+    """One algorithm slot in the nested Kafka result."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    algorithm_type: str = Field(alias="algorithmType")
+    algorithm_num: int = Field(alias="algorithmNum")
+    image_url: str = Field(default="", alias="imageUrl")
+    detections: list[DetectionItem] = Field(default_factory=list)
 
 
 class AiInferenceResult(BaseModel):
@@ -64,27 +74,8 @@ class AiInferenceResult(BaseModel):
     request_id: str = Field(alias="requestId")
     task_id: str = Field(alias="taskId")
     device_id: str = Field(alias="deviceId")
-    algorithm_type: list[str] = Field(default_factory=list, alias="algorithmType")
-    image_url: list[str] = Field(default_factory=list, alias="imageUrl")
-    algorithm_num: list[int] = Field(default_factory=list, alias="algorithmNum")
     timestamp: int | None = None
-    detections: list[DetectionItem] = Field(default_factory=list)
-    stage: str | None = None
-    partial: bool | None = None
-
-    @model_validator(mode="after")
-    def _slots_aligned(self) -> AiInferenceResult:
-        n = len(self.algorithm_type)
-        if len(self.image_url) != n or len(self.algorithm_num) != n:
-            raise ValueError(
-                "algorithmType, imageUrl, algorithmNum must have the same length"
-            )
-        return self
+    results: list[AlgorithmResult] = Field(default_factory=list)
 
     def to_kafka_dict(self) -> dict[str, Any]:
-        payload = self.model_dump(by_alias=True, exclude_none=True)
-        # Always include detections list for forward compatibility
-        payload["detections"] = [
-            d.model_dump(by_alias=True, exclude_none=True) for d in self.detections
-        ]
-        return payload
+        return self.model_dump(by_alias=True, exclude_none=True)

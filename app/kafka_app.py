@@ -92,7 +92,7 @@ class KafkaInferenceApp:
             "Published result requestId=%s taskId=%s slots=%s",
             result.request_id,
             result.task_id,
-            len(result.algorithm_type),
+            len(result.results),
         )
 
     async def run_forever(self) -> None:

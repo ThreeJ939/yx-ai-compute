@@ -39,16 +39,23 @@ def test_result_roundtrip_kafka_dict():
             "requestId": "r",
             "taskId": "t",
             "deviceId": "d",
-            "algorithmType": ["FISHING_DETECTION"],
-            "algorithmNum": [0],
-            "imageUrl": [""],
             "timestamp": 1,
-            "detections": [],
+            "results": [
+                {
+                    "algorithmType": "BEH_FISHING",
+                    "algorithmNum": 0,
+                    "imageUrl": "",
+                    "detections": [],
+                }
+            ],
         }
     )
     payload = result.to_kafka_dict()
     text = json.dumps(payload)
     loaded = json.loads(text)
     assert loaded["requestId"] == "r"
-    assert loaded["algorithmType"] == ["FISHING_DETECTION"]
-    assert loaded["algorithmNum"] == [0]
+    assert loaded["results"][0]["algorithmType"] == "BEH_FISHING"
+    assert loaded["results"][0]["algorithmNum"] == 0
+    assert "stage" not in loaded
+    assert "partial" not in loaded
+    assert "algorithmType" not in loaded

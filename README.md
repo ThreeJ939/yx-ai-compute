@@ -74,7 +74,7 @@ YOLO_CLIP_WEIGHTS=D:/java_workspace/YongXin/yolo-world-demo/weights/clip/ViT-B-3
 | algorithmTypes code | YOLO-World prompts |
 |---------------------|--------------------|
 | `ENGINEERING_VEHICLE_DETECTION` | excavator, bulldozer, truck, crane, ... |
-| `FISHING_DETECTION` | person（行为增强一期 noop） |
+| `BEH_FISHING` | person（需 LLM/VLM 确认行为后才回写） |
 | `VEHICLE_DETECTION` | car, truck, bus |
 | 未知 code | 槽位 `algorithmNum=0`，不中断其它算法 |
 
@@ -82,10 +82,11 @@ YOLO_CLIP_WEIGHTS=D:/java_workspace/YongXin/yolo-world-demo/weights/clip/ViT-B-3
 
 ## 结果契约
 
-兼容 Java `AiInferenceResult`：
+兼容 Java `AiInferenceResult` 嵌套结构：
 
-- `algorithmType` / `algorithmNum` / `imageUrl` 三列表对齐
-- 额外字段 `detections`（bbox `[x,y,w,h]`）；当前 recognition 会忽略未知字段
+- 顶层 `results[]`：每个元素对应一个 `algorithmType`
+- 槽位内含 `algorithmNum` / `imageUrl` / `detections[]`（bbox `[x,y,w,h]`）
+- `BEH_*` 在 LLM 未开启时整槽跳过；开启后只返回带 `behavior` 的框
 
 详见 [docs/kafka-contract.md](docs/kafka-contract.md)。
 
@@ -114,7 +115,7 @@ python -m scripts.infer_local image.jpg -p "person,boat,excavator" -o out.jpg
 python -m scripts.infer_local image.jpg --conf 0.15 --no-tile -v
 ```
 
-脚本会打印与 Kafka 结果同结构的 JSON（含 `algorithmType` / `algorithmNum` / `detections`）。
+脚本会打印与 Kafka 结果同结构的 JSON（含 `results[].algorithmType` / `algorithmNum` / `detections`）。
 
 ### 本地 MP4 压测（实时性能）
 
@@ -153,7 +154,7 @@ docker run --rm \
 
 ## LLM 行为增强（同步）
 
-开启后，`stage=behavior` 的算法在 YOLO 出框后会裁剪送 VLM，再一次回写 Kafka（`stage=behavior`，`detections[].behavior`）。
+开启后，`stage=behavior` 的算法在 YOLO 出框后会裁剪送 VLM，最终 Kafka 结果只包含 VLM 确认的框（`detections[].behavior`）。YOLO 中间结果走 WebSocket 预览，不写 Kafka。
 
 ```bash
 # .env

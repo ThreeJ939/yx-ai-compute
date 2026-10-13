@@ -122,7 +122,13 @@ class Orchestrator:
         image_bgr = _decode_image(image_bytes)
         if image_bgr is None:
             logger.error("Failed to decode image requestId=%s", request.request_id)
-            return build_zero_result(request, reason="decode_failed")
+            return build_zero_result(
+                request,
+                reason="decode_failed",
+                llm_enabled=self._settings.llm_enabled,
+                minio_endpoint=self._settings.minio_endpoint,
+                minio_secure=self._settings.minio_secure,
+            )
 
         plan = plan_request(request.algorithm_types)
         if plan.unknown:
@@ -143,9 +149,14 @@ class Orchestrator:
             )
         except Exception:
             logger.exception("Inference failed requestId=%s", request.request_id)
-            return build_zero_result(request, reason="infer_failed")
+            return build_zero_result(
+                request,
+                reason="infer_failed",
+                llm_enabled=self._settings.llm_enabled,
+                minio_endpoint=self._settings.minio_endpoint,
+                minio_secure=self._settings.minio_secure,
+            )
 
-        llm_applied = False
         for code in plan.known:
             spec = get_spec(code)
             if spec is None or spec.stage != "behavior":
@@ -170,13 +181,13 @@ class Orchestrator:
                 continue
             if enhance_result.applied:
                 detections = enhance_result.detections
-                llm_applied = True
 
         return build_result(
             request,
             detections,
-            stage="behavior" if llm_applied else "yolo",
-            partial=False,
+            llm_enabled=self._settings.llm_enabled,
+            minio_endpoint=self._settings.minio_endpoint,
+            minio_secure=self._settings.minio_secure,
         )
 
     async def enhance_direct(

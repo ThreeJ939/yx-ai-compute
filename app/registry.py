@@ -55,7 +55,7 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         backend="world",
         prompts=("person",),
         description="Person detection",
-        conf_threshold=0.6,
+        conf_threshold=0.4,
     ),
     "DET_SHIP": AlgorithmSpec(
         code="DET_SHIP",
@@ -113,7 +113,7 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         prompts=(),
         depends_on=("DET_FIRE_SMOKE",),
         description="Dedicated fire/smoke YOLO + LLM confirmation",
-        conf_threshold=0.5,
+        conf_threshold=0.4,
     ),
 }
 

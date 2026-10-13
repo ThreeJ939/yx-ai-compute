@@ -174,7 +174,7 @@ def main() -> int:
             "timestamp": int(time.time() * 1000),
         }
     )
-    result = build_result(request, batch.detections, stage="yolo", partial=False)
+    result = build_result(request, batch.detections, llm_enabled=False)
     print(json.dumps(result.to_kafka_dict(), ensure_ascii=False, indent=2))
 
     if args.output:
