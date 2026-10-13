@@ -23,7 +23,7 @@ from app.registry import (
     plan_request,
     prompt_matches_detection,
 )
-from app.result_builder import build_result, build_zero_result
+from app.result_builder import build_result, has_positive_detections
 from app.schemas import AiInferenceRequest, AiInferenceResult
 
 logger = logging.getLogger(__name__)
@@ -136,7 +136,12 @@ class Orchestrator:
         self._yolo_pool.shutdown(wait=False, cancel_futures=True)
         self._llm_pool.shutdown(wait=False, cancel_futures=True)
 
-    async def process(self, request: AiInferenceRequest) -> AiInferenceResult:
+    async def process(self, request: AiInferenceRequest) -> AiInferenceResult | None:
+        """Run inference; return result only when there is at least one detection.
+
+        Empty / failure outcomes return ``None`` so Kafka skips publish (alarm-only,
+        lower result-topic load). Request offset is still committed by the consumer.
+        """
         try:
             image_bytes = self._minio.download_bytes(
                 request.bucket or "",
@@ -153,14 +158,11 @@ class Orchestrator:
 
         image_bgr = _decode_image(image_bytes)
         if image_bgr is None:
-            logger.error("Failed to decode image requestId=%s", request.request_id)
-            return build_zero_result(
-                request,
-                reason="decode_failed",
-                llm_enabled=self._settings.llm_enabled,
-                minio_endpoint=self._settings.minio_endpoint,
-                minio_secure=self._settings.minio_secure,
+            logger.error(
+                "Failed to decode image requestId=%s; skip result publish",
+                request.request_id,
             )
+            return None
 
         plan = plan_request(request.algorithm_types)
         if plan.unknown:
@@ -180,14 +182,11 @@ class Orchestrator:
                 self._settings.yolo_iou,
             )
         except Exception:
-            logger.exception("Inference failed requestId=%s", request.request_id)
-            return build_zero_result(
-                request,
-                reason="infer_failed",
-                llm_enabled=self._settings.llm_enabled,
-                minio_endpoint=self._settings.minio_endpoint,
-                minio_secure=self._settings.minio_secure,
+            logger.exception(
+                "Inference failed requestId=%s; skip result publish",
+                request.request_id,
             )
+            return None
 
         beh_codes = [
             code
@@ -224,13 +223,21 @@ class Orchestrator:
             if applied_results:
                 detections = _merge_behavior(detections, applied_results)
 
-        return build_result(
+        result = build_result(
             request,
             detections,
             llm_enabled=self._settings.llm_enabled,
             minio_endpoint=self._settings.minio_endpoint,
             minio_secure=self._settings.minio_secure,
         )
+        if not has_positive_detections(result):
+            logger.info(
+                "No detections requestId=%s taskId=%s; skip result publish",
+                request.request_id,
+                request.task_id,
+            )
+            return None
+        return result
 
     async def enhance_direct(
         self,

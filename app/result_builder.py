@@ -77,6 +77,16 @@ def _request_codes(request: AiInferenceRequest) -> list[str]:
     return codes
 
 
+def has_positive_detections(result: AiInferenceResult) -> bool:
+    """True when any algorithm slot has at least one detection (alarm-worthy)."""
+    for slot in result.results or []:
+        if slot.algorithm_num > 0:
+            return True
+        if slot.detections:
+            return True
+    return False
+
+
 def build_result(
     request: AiInferenceRequest,
     all_detections: list[RawDetection],

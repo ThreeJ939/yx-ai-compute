@@ -74,9 +74,10 @@ Recognition `AiResultConsumer` requires `results` non-empty:
 
 - `bbox`: `[x, y, width, height]` in pixels
 - `imageUrl`: original inference frame (`http(s)://{MINIO_ENDPOINT}/{bucket}/{imageObjectKey}`); same for all slots. Not an annotated image — recognition draws boxes and uploads alarm snapshots itself
-- `DET_*` / pure detect codes: always present in `results` with YOLO boxes
+- `DET_*` / pure detect codes: present in `results` with YOLO boxes **only when publishing**
 - `BEH_*` + LLM disabled: slot omitted entirely (no behavior alarm)
-- `BEH_*` + LLM enabled: only detections with non-empty `behavior`; empty confirmed set still emits `algorithmNum=0`
+- `BEH_*` + LLM enabled: only detections with non-empty `behavior`
+- **Alarm-only publish**: if every slot has `algorithmNum=0` / empty `detections`, compute **does not** publish to the result topic (commit request offset anyway)
 - YOLO intermediate / preview results go via WebSocket, not this Kafka topic
 - No `stage` / `partial` fields
 
@@ -87,7 +88,8 @@ Recognition `AiResultConsumer` requires `results` non-empty:
 | Poison / invalid JSON | Log, commit offset (skip) |
 | Missing required fields | Log, commit |
 | MinIO transient error | Log, **do not** commit (retry) |
-| Decode / infer error | Publish zero `algorithmNum` slots (skip BEH_* if LLM off), commit |
+| Decode / infer error | Log, **no** result publish, commit |
+| Empty detections (normal miss) | Log, **no** result publish, commit |
 
 ## Algorithm codes
 

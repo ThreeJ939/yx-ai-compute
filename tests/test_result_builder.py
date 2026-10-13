@@ -4,6 +4,7 @@ from app.result_builder import (
     build_source_image_url,
     build_zero_result,
     filter_for_code,
+    has_positive_detections,
 )
 from app.schemas import AiInferenceRequest
 
@@ -132,6 +133,7 @@ def test_build_result_beh_llm_enabled_all_negative_zero_slot():
     assert result.results[0].algorithm_num == 0
     assert result.results[0].detections == []
     assert result.results[0].image_url == _SOURCE_URL
+    assert has_positive_detections(result) is False
 
 
 def test_build_result_unknown_code_zero():
@@ -140,6 +142,15 @@ def test_build_result_unknown_code_zero():
     assert result.results[0].algorithm_type == "NO_SUCH"
     assert result.results[0].algorithm_num == 0
     assert result.results[0].image_url == _SOURCE_URL
+    assert has_positive_detections(result) is False
+
+
+def test_has_positive_detections_true():
+    dets = [
+        RawDetection("person", "person", 0.9, [10, 20, 30, 40], "person"),
+    ]
+    result = _build(_request(["DET_PERSON"]), dets)
+    assert has_positive_detections(result) is True
 
 
 def test_build_zero_result():
@@ -152,6 +163,7 @@ def test_build_zero_result():
     assert result.results[0].algorithm_num == 0
     assert result.results[0].detections == []
     assert result.results[0].image_url == _SOURCE_URL
+    assert has_positive_detections(result) is False
 
 
 def test_build_zero_result_skips_beh_when_llm_off():
