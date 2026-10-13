@@ -130,7 +130,12 @@ class LlmBehaviorEnhancer:
             crops_b64 = [
                 self._client.encode_crop_jpeg_b64(c.image_bgr) for c in crops
             ]
-            verdicts = self._client.call(crops_b64, template.system, template.user)
+            verdicts = self._client.call(
+                crops_b64,
+                template.system,
+                template.user,
+                max_workers=self._settings.llm_crop_concurrency,
+            )
         except Exception:
             logger.exception("LLM enhance failed code=%s; keeping YOLO detections", code)
             return EnhanceResult(

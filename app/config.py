@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     kafka_request_topic: str = "ai.inference.request"
     kafka_result_topic: str = "ai.inference.result"
     kafka_group_id: str = "yx-ai-compute-group"
+    # Max in-flight Kafka messages (YOLO serial, LLM stages overlap)
+    kafka_max_concurrent: int = 5
 
     minio_endpoint: str = "localhost:9000"
     minio_access_key: str = "minioadmin"
@@ -85,6 +87,8 @@ class Settings(BaseSettings):
     llm_prompts_path: str = "config/llm_prompts.yaml"
     # Request OpenAI-style response_format=json_object (set false if local server rejects it)
     llm_json_object: bool = True
+    # Per-request crop concurrency (align with LLM backend instance count)
+    llm_crop_concurrency: int = 3
 
     def kafka_has_sasl(self) -> bool:
         return bool(self.kafka_username and self.kafka_password)

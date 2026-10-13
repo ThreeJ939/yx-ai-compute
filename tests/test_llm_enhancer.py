@@ -116,7 +116,7 @@ class _FakeClient:
     def encode_crop_jpeg_b64(self, image_bgr, quality: int = 85) -> str:
         return "ZmFrZQ=="
 
-    def call(self, crops_b64, system, user):
+    def call(self, crops_b64, system, user, max_workers: int = 1):
         self.calls += 1
         if isinstance(self._verdicts, Exception):
             raise self._verdicts

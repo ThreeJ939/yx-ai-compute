@@ -149,10 +149,39 @@ class LlmClient:
         crops_b64: list[str],
         system: str,
         user: str,
+        max_workers: int = 1,
     ) -> list[dict[str, Any]]:
-        """Call VLM for each crop; failures propagate to caller."""
-        out: list[dict[str, Any]] = []
-        for i, b64 in enumerate(crops_b64):
-            logger.debug("VLM call crop=%s/%s model=%s", i + 1, len(crops_b64), self._settings.llm_model)
-            out.append(self.call_one(b64, system, user))
-        return out
+        """Call VLM for each crop; failures propagate to caller.
+
+        When ``max_workers`` > 1 and there are multiple crops, calls run
+        concurrently via a short-lived ThreadPoolExecutor (sync OpenAI client).
+        """
+        n = len(crops_b64)
+        if n == 0:
+            return []
+        workers = max(1, int(max_workers))
+        if n == 1 or workers == 1:
+            out: list[dict[str, Any]] = []
+            for i, b64 in enumerate(crops_b64):
+                logger.debug(
+                    "VLM call crop=%s/%s model=%s",
+                    i + 1,
+                    n,
+                    self._settings.llm_model,
+                )
+                out.append(self.call_one(b64, system, user))
+            return out
+
+        from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
+
+        logger.debug(
+            "VLM call parallel crops=%s workers=%s model=%s",
+            n,
+            workers,
+            self._settings.llm_model,
+        )
+        with ThreadPoolExecutor(max_workers=min(workers, n), thread_name_prefix="vlm") as pool:
+            futures = [
+                pool.submit(self.call_one, b64, system, user) for b64 in crops_b64
+            ]
+            return [f.result() for f in futures]

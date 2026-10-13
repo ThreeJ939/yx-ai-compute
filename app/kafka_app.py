@@ -99,19 +99,40 @@ class KafkaInferenceApp:
         if self._consumer is None:
             raise RuntimeError("Consumer not started")
         assert self._consumer is not None
-        while self._running:
-            try:
-                batch = await self._consumer.getmany(timeout_ms=1000, max_records=10)
-            except asyncio.CancelledError:
-                raise
-            except KafkaError:
-                logger.exception("Kafka poll error")
-                await asyncio.sleep(1)
-                continue
+        max_concurrent = max(1, int(self._settings.kafka_max_concurrent))
+        sem = asyncio.Semaphore(max_concurrent)
+        pending: set[asyncio.Task] = set()
+        try:
+            while self._running:
+                try:
+                    batch = await self._consumer.getmany(
+                        timeout_ms=1000,
+                        max_records=max_concurrent,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except KafkaError:
+                    logger.exception("Kafka poll error")
+                    await asyncio.sleep(1)
+                    continue
 
-            for _tp, messages in batch.items():
-                for msg in messages:
-                    await self._handle_message(msg)
+                for _tp, messages in batch.items():
+                    for msg in messages:
+                        await sem.acquire()
+                        task = asyncio.create_task(
+                            self._handle_with_release(sem, msg)
+                        )
+                        pending.add(task)
+                        task.add_done_callback(pending.discard)
+        finally:
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _handle_with_release(self, sem: asyncio.Semaphore, msg: Any) -> None:
+        try:
+            await self._handle_message(msg)
+        finally:
+            sem.release()
 
     async def _handle_message(self, msg: Any) -> None:
         assert self._consumer is not None

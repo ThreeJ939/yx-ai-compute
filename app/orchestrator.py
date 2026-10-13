@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import copy
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
@@ -11,7 +13,7 @@ import numpy as np
 from app.config import Settings
 from app.detectors.base import DetectBatchResult, Detector, RawDetection
 from app.detectors.yolo_world import YoloWorldDetector
-from app.enhancers.base import BehaviorEnhancer, EnhanceRequest
+from app.enhancers.base import BehaviorEnhancer, EnhanceRequest, EnhanceResult
 from app.enhancers.noop import NoopBehaviorEnhancer
 from app.minio_client import MinioImageStore
 from app.registry import (
@@ -25,6 +27,29 @@ from app.result_builder import build_result, build_zero_result
 from app.schemas import AiInferenceRequest, AiInferenceResult
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_behavior(
+    base: list[RawDetection],
+    enhance_results: list[EnhanceResult],
+) -> list[RawDetection]:
+    """Merge BEH_* enhance outputs onto a copy of base detections.
+
+    Each enhancer may set ``behavior`` on matching boxes. Later results
+    overwrite earlier non-empty behavior labels for the same index.
+    """
+    out = [copy.copy(d) for d in base]
+    for er in enhance_results:
+        if not er.detections:
+            continue
+        # Prefer length-aligned merge; fall back to shorter zip
+        n = min(len(out), len(er.detections))
+        for i in range(n):
+            beh = getattr(er.detections[i], "behavior", None)
+            if beh:
+                out[i].behavior = beh
+                out[i].confidence = er.detections[i].confidence
+    return out
 
 
 def _apply_algo_conf_filter(
@@ -98,11 +123,18 @@ class Orchestrator:
         self._detector = self._detectors.get("world")
 
         self._enhancer: BehaviorEnhancer = enhancer or NoopBehaviorEnhancer()
-        # YOLO/LLM are sync; run in thread pool from async Kafka loop
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo")
+        # YOLO stays serial (GPU single-stream); LLM pool sized for crop concurrency
+        self._yolo_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo")
+        llm_workers = max(1, int(settings.llm_crop_concurrency))
+        self._llm_pool = ThreadPoolExecutor(
+            max_workers=llm_workers, thread_name_prefix="llm"
+        )
+        # Backward-compat alias (tests / older callers)
+        self._pool = self._yolo_pool
 
     def close(self) -> None:
-        self._pool.shutdown(wait=False, cancel_futures=True)
+        self._yolo_pool.shutdown(wait=False, cancel_futures=True)
+        self._llm_pool.shutdown(wait=False, cancel_futures=True)
 
     async def process(self, request: AiInferenceRequest) -> AiInferenceResult:
         try:
@@ -140,7 +172,7 @@ class Orchestrator:
 
         try:
             detections = await _run_in_executor(
-                self._pool,
+                self._yolo_pool,
                 self._infer_plan_sync,
                 image_bgr,
                 plan,
@@ -157,13 +189,15 @@ class Orchestrator:
                 minio_secure=self._settings.minio_secure,
             )
 
-        for code in plan.known:
-            spec = get_spec(code)
-            if spec is None or spec.stage != "behavior":
-                continue
-            try:
-                enhance_result = await _run_in_executor(
-                    self._pool,
+        beh_codes = [
+            code
+            for code in plan.known
+            if (spec := get_spec(code)) is not None and spec.stage == "behavior"
+        ]
+        if beh_codes:
+            tasks = [
+                _run_in_executor(
+                    self._llm_pool,
                     self._enhancer.enhance,
                     EnhanceRequest(
                         behavior=code,
@@ -172,15 +206,23 @@ class Orchestrator:
                         algorithm_code=code,
                     ),
                 )
-            except Exception:
-                logger.exception(
-                    "Enhancer failed code=%s requestId=%s",
-                    code,
-                    request.request_id,
-                )
-                continue
-            if enhance_result.applied:
-                detections = enhance_result.detections
+                for code in beh_codes
+            ]
+            gathered = await asyncio.gather(*tasks, return_exceptions=True)
+            applied_results: list[EnhanceResult] = []
+            for code, item in zip(beh_codes, gathered):
+                if isinstance(item, Exception):
+                    logger.error(
+                        "Enhancer failed code=%s requestId=%s",
+                        code,
+                        request.request_id,
+                        exc_info=item,
+                    )
+                    continue
+                if item.applied:
+                    applied_results.append(item)
+            if applied_results:
+                detections = _merge_behavior(detections, applied_results)
 
         return build_result(
             request,
@@ -204,32 +246,43 @@ class Orchestrator:
         """
         llm_applied = False
         vlm_crops: list = []
-        for code in algorithm_codes:
-            spec = get_spec(code)
-            if spec is None or spec.stage != "behavior":
+        beh_codes = [
+            code
+            for code in algorithm_codes
+            if (spec := get_spec(code)) is not None and spec.stage == "behavior"
+        ]
+        if not beh_codes:
+            return list(detections), llm_applied, vlm_crops
+
+        tasks = [
+            _run_in_executor(
+                self._llm_pool,
+                self._enhancer.enhance,
+                EnhanceRequest(
+                    behavior=code,
+                    image_bgr=image_bgr,
+                    detections=list(detections),
+                    algorithm_code=code,
+                ),
+            )
+            for code in beh_codes
+        ]
+        gathered = await asyncio.gather(*tasks, return_exceptions=True)
+        applied_results: list[EnhanceResult] = []
+        for code, item in zip(beh_codes, gathered):
+            if isinstance(item, Exception):
+                logger.error("Preview enhance failed code=%s", code, exc_info=item)
                 continue
-            try:
-                enhance_result = await _run_in_executor(
-                    self._pool,
-                    self._enhancer.enhance,
-                    EnhanceRequest(
-                        behavior=code,
-                        image_bgr=image_bgr,
-                        detections=list(detections),
-                        algorithm_code=code,
-                    ),
-                )
-            except Exception:
-                logger.exception("Preview enhance failed code=%s", code)
-                continue
-            if getattr(enhance_result, "crops", None):
-                vlm_crops.extend(enhance_result.crops)
-            if enhance_result.applied:
-                detections = enhance_result.detections
+            if getattr(item, "crops", None):
+                vlm_crops.extend(item.crops)
+            if item.applied:
+                applied_results.append(item)
                 llm_applied = True
-            elif enhance_result.detections:
-                # Keep YOLO boxes even when VLM did not confirm
-                detections = enhance_result.detections
+            elif item.detections and not applied_results:
+                # Keep YOLO boxes even when VLM did not confirm (no applied yet)
+                detections = item.detections
+        if applied_results:
+            detections = _merge_behavior(detections, applied_results)
         return list(detections), llm_applied, vlm_crops
 
     async def detect_direct(
@@ -255,7 +308,7 @@ class Orchestrator:
         if algorithm_codes:
             plan = plan_request(algorithm_codes)
             return await _run_in_executor(
-                self._pool,
+                self._yolo_pool,
                 self._infer_plan_to_batch,
                 image_bgr,
                 plan,
@@ -272,7 +325,7 @@ class Orchestrator:
             return DetectBatchResult()
 
         return await _run_in_executor(
-            self._pool,
+            self._yolo_pool,
             world.detect,
             image_bgr,
             prompts,
@@ -379,7 +432,5 @@ def _decode_image(image_bytes: bytes) -> np.ndarray | None:
 
 
 async def _run_in_executor(pool: ThreadPoolExecutor, fn, *args):
-    import asyncio
-
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(pool, lambda: fn(*args))
