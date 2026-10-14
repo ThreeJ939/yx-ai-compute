@@ -129,12 +129,23 @@ class Orchestrator:
         self._llm_pool = ThreadPoolExecutor(
             max_workers=llm_workers, thread_name_prefix="llm"
         )
+        # MinIO download + JPEG decode off the asyncio event loop
+        io_workers = max(2, int(settings.kafka_max_concurrent))
+        self._io_pool = ThreadPoolExecutor(
+            max_workers=io_workers, thread_name_prefix="io-decode"
+        )
         # Backward-compat alias (tests / older callers)
         self._pool = self._yolo_pool
 
     def close(self) -> None:
         self._yolo_pool.shutdown(wait=False, cancel_futures=True)
         self._llm_pool.shutdown(wait=False, cancel_futures=True)
+        self._io_pool.shutdown(wait=False, cancel_futures=True)
+
+    def _fetch_image_sync(self, bucket: str, object_key: str) -> np.ndarray | None:
+        """Download from MinIO and JPEG-decode (runs on _io_pool)."""
+        image_bytes = self._minio.download_bytes(bucket, object_key)
+        return _decode_image(image_bytes)
 
     async def process(self, request: AiInferenceRequest) -> AiInferenceResult | None:
         """Run inference; return result only when there is at least one detection.
@@ -143,7 +154,9 @@ class Orchestrator:
         lower result-topic load). Request offset is still committed by the consumer.
         """
         try:
-            image_bytes = self._minio.download_bytes(
+            image_bgr = await _run_in_executor(
+                self._io_pool,
+                self._fetch_image_sync,
                 request.bucket or "",
                 request.image_object_key or "",
             )
@@ -156,7 +169,6 @@ class Orchestrator:
             )
             raise
 
-        image_bgr = _decode_image(image_bytes)
         if image_bgr is None:
             logger.error(
                 "Failed to decode image requestId=%s; skip result publish",
@@ -305,7 +317,7 @@ class Orchestrator:
         Prefer ``algorithm_codes`` so non-world backends (fire_smoke) are included.
         ``prompts`` alone still works for world-only preview callers.
         """
-        image_bgr = _decode_image(image_bytes)
+        image_bgr = await _run_in_executor(self._io_pool, _decode_image, image_bytes)
         if image_bgr is None:
             raise ValueError("Cannot decode image bytes")
 
