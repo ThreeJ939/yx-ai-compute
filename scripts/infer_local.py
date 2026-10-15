@@ -143,6 +143,7 @@ def main() -> int:
         tiled=tiled,
         tile_size=settings.yolo_tile_size,
         tile_overlap=settings.yolo_tile_overlap,
+        tile_batch=settings.yolo_tile_batch,
         imgsz=settings.yolo_imgsz,
     )
 

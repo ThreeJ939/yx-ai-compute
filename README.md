@@ -55,11 +55,12 @@ python -m app.main
 | `YOLO_CONF` / `YOLO_IOU` | YOLO-World（world）检测置信度与 NMS IOU |
 | `YOLO_TILED` | world 滑窗推理（默认 true，利于远景/小目标） |
 | `YOLO_TILE_SIZE` / `YOLO_TILE_OVERLAP` | 切块边长与重叠率（对齐 yolo-world-demo） |
+| `YOLO_TILE_BATCH` | 同进程一次 `predict` 的 tile 数（默认 4；`1`=串行） |
 | `YOLO_IMGSZ` | 单块/整图 `predict` 的 imgsz |
 | `FIRE_SMOKE_CONF` / `FIRE_SMOKE_IOU` | fire_smoke 独立阈值（0=沿用 YOLO_CONF/IOU） |
-| `FIRE_SMOKE_TILED` / `TILE_SIZE` / `TILE_OVERLAP` | fire_smoke 独立滑窗 |
+| `FIRE_SMOKE_TILED` / `TILE_SIZE` / `TILE_OVERLAP` / `TILE_BATCH` | fire_smoke 独立滑窗与 batch |
 
-图宽或高大于 `YOLO_TILE_SIZE` 时走滑窗 + 按类 NMS；否则整图一次推理。
+图宽或高大于 `YOLO_TILE_SIZE` 时走滑窗 + 按类 NMS；否则整图一次推理。滑窗时按 `YOLO_TILE_BATCH` 批量送入 GPU。
 
 CLIP 可复用 demo 文件，例如：
 

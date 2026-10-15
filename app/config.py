@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     yolo_tile_size: int = 640
     yolo_tile_overlap: float = 0.2
     yolo_imgsz: int = 640
+    # How many tiles per YOLO predict() call (1 = serial; 4 typical for GPU)
+    yolo_tile_batch: int = 4
 
     # Dedicated fire/smoke Ultralytics YOLO (not YOLO-World). Off by default.
     fire_smoke_weights: str = "weights/fire-smoke-yolov8n.pt"
@@ -61,6 +63,7 @@ class Settings(BaseSettings):
     fire_smoke_tiled: bool = True
     fire_smoke_tile_size: int = 640
     fire_smoke_tile_overlap: float = 0.2
+    fire_smoke_tile_batch: int = 4
     fire_smoke_conf: float = 0.0
     fire_smoke_iou: float = 0.0
 

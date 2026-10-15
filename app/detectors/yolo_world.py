@@ -10,7 +10,7 @@ import numpy as np
 
 from app.detectors.base import DetectBatchResult, RawDetection
 from app.detectors.clip_path import ensure_clip_caches
-from app.detectors.tiling import iter_tiles
+from app.detectors.tiling import as_predict_result_list, build_tile_crops
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ class YoloWorldDetector:
         tiled: bool = True,
         tile_size: int = 640,
         tile_overlap: float = 0.2,
+        tile_batch: int = 4,
         imgsz: int = 640,
     ) -> None:
         self._weights = weights
@@ -35,6 +36,7 @@ class YoloWorldDetector:
         self._tiled = tiled
         self._tile_size = tile_size
         self._tile_overlap = tile_overlap
+        self._tile_batch = max(1, int(tile_batch))
         self._imgsz = imgsz
         self._model: Any = None
         self._lock = threading.Lock()
@@ -62,13 +64,14 @@ class YoloWorldDetector:
 
     def _load_model(self) -> Any:
         logger.info(
-            "Loading YOLO-World weights=%s device=%s clip=%s tiled=%s tile=%s overlap=%s",
+            "Loading YOLO-World weights=%s device=%s clip=%s tiled=%s tile=%s overlap=%s batch=%s",
             self._weights,
             self._device,
             self._clip_weights or "(auto)",
             self._tiled,
             self._tile_size,
             self._tile_overlap,
+            self._tile_batch,
         )
         try:
             from ultralytics import YOLOWorld
@@ -160,37 +163,57 @@ class YoloWorldDetector:
         all_cls: list[Any] = []
         names: dict[int, str] = {}
 
-        tile = self._tile_size
-        for x1, y1 in iter_tiles(w, h, tile=tile, overlap=self._tile_overlap):
-            x2, y2 = x1 + tile, y1 + tile
-            crop = np.zeros((tile, tile, 3), dtype=np.uint8)
-            region = image_bgr[max(y1, 0) : min(y2, h), max(x1, 0) : min(x2, w)]
-            crop[: region.shape[0], : region.shape[1]] = region
-
-            result = model.predict(
-                source=crop,
+        tiles = build_tile_crops(
+            image_bgr, tile=self._tile_size, overlap=self._tile_overlap
+        )
+        batch_size = self._tile_batch
+        for start in range(0, len(tiles), batch_size):
+            chunk = tiles[start : start + batch_size]
+            crops = [crop for _x1, _y1, crop in chunk]
+            raw_results = model.predict(
+                source=crops if len(crops) > 1 else crops[0],
                 imgsz=self._imgsz,
                 conf=conf,
                 device=self._device,
                 verbose=False,
-            )[0]
-            names = result.names or names
-            if result.boxes is None or len(result.boxes) == 0:
-                continue
+            )
+            try:
+                results = as_predict_result_list(raw_results, len(crops))
+            except ValueError:
+                logger.exception(
+                    "Tile batch align failed; falling back to serial for chunk start=%s size=%s",
+                    start,
+                    len(crops),
+                )
+                results = []
+                for crop in crops:
+                    one = model.predict(
+                        source=crop,
+                        imgsz=self._imgsz,
+                        conf=conf,
+                        device=self._device,
+                        verbose=False,
+                    )
+                    results.extend(as_predict_result_list(one, 1))
 
-            # Clone: YOLO boxes may be inference tensors; inplace += is forbidden.
-            xyxy = result.boxes.xyxy.detach().cpu().clone()
-            xyxy[:, 0] = xyxy[:, 0] + x1
-            xyxy[:, 2] = xyxy[:, 2] + x1
-            xyxy[:, 1] = xyxy[:, 1] + y1
-            xyxy[:, 3] = xyxy[:, 3] + y1
-            xyxy[:, 0] = xyxy[:, 0].clamp(0, w)
-            xyxy[:, 2] = xyxy[:, 2].clamp(0, w)
-            xyxy[:, 1] = xyxy[:, 1].clamp(0, h)
-            xyxy[:, 3] = xyxy[:, 3].clamp(0, h)
-            all_boxes.append(xyxy)
-            all_scores.append(result.boxes.conf.detach().cpu().clone())
-            all_cls.append(result.boxes.cls.detach().cpu().long().clone())
+            for (x1, y1, _crop), result in zip(chunk, results):
+                names = result.names or names
+                if result.boxes is None or len(result.boxes) == 0:
+                    continue
+
+                # Clone: YOLO boxes may be inference tensors; inplace += is forbidden.
+                xyxy = result.boxes.xyxy.detach().cpu().clone()
+                xyxy[:, 0] = xyxy[:, 0] + x1
+                xyxy[:, 2] = xyxy[:, 2] + x1
+                xyxy[:, 1] = xyxy[:, 1] + y1
+                xyxy[:, 3] = xyxy[:, 3] + y1
+                xyxy[:, 0] = xyxy[:, 0].clamp(0, w)
+                xyxy[:, 2] = xyxy[:, 2].clamp(0, w)
+                xyxy[:, 1] = xyxy[:, 1].clamp(0, h)
+                xyxy[:, 3] = xyxy[:, 3].clamp(0, h)
+                all_boxes.append(xyxy)
+                all_scores.append(result.boxes.conf.detach().cpu().clone())
+                all_cls.append(result.boxes.cls.detach().cpu().long().clone())
 
         if not all_boxes:
             return DetectBatchResult()
@@ -234,9 +257,11 @@ class YoloWorldDetector:
                 )
             )
         logger.debug(
-            "Tiled detect done tiles_area=%sx%s detections=%s",
+            "Tiled detect done tiles_area=%sx%s tiles=%s batch=%s detections=%s",
             w,
             h,
+            len(tiles),
+            batch_size,
             len(out),
         )
         return DetectBatchResult(detections=out)

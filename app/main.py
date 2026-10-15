@@ -51,6 +51,7 @@ def _build_detector_registry(settings: Settings, logger: logging.Logger) -> dict
             tiled=settings.yolo_tiled,
             tile_size=settings.yolo_tile_size,
             tile_overlap=settings.yolo_tile_overlap,
+            tile_batch=settings.yolo_tile_batch,
             imgsz=settings.yolo_imgsz,
         )
     }
@@ -71,6 +72,7 @@ def _build_detector_registry(settings: Settings, logger: logging.Logger) -> dict
                 tiled=settings.fire_smoke_tiled,
                 tile_size=settings.fire_smoke_tile_size,
                 tile_overlap=settings.fire_smoke_tile_overlap,
+                tile_batch=settings.fire_smoke_tile_batch,
                 imgsz=settings.yolo_imgsz,
                 name="fire_smoke",
             )
