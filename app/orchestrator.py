@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import cv2
@@ -27,6 +29,13 @@ from app.result_builder import build_result, has_positive_detections
 from app.schemas import AiInferenceRequest, AiInferenceResult
 
 logger = logging.getLogger(__name__)
+
+# Soft thresholds for WARN (ms) — help spot backlog / contention
+_WARN_IO_MS = 2000.0
+_WARN_YOLO_WAIT_MS = 2000.0
+_WARN_YOLO_INFER_MS = 3000.0
+_WARN_LLM_MS = 8000.0
+_WARN_TOTAL_MS = 15000.0
 
 
 def _merge_behavior(
@@ -134,6 +143,8 @@ class Orchestrator:
         self._io_pool = ThreadPoolExecutor(
             max_workers=io_workers, thread_name_prefix="io-decode"
         )
+        self._in_flight = 0
+        self._in_flight_lock = threading.Lock()
         # Backward-compat alias (tests / older callers)
         self._pool = self._yolo_pool
 
@@ -147,109 +158,226 @@ class Orchestrator:
         image_bytes = self._minio.download_bytes(bucket, object_key)
         return _decode_image(image_bytes)
 
+    def _infer_plan_sync_timed(
+        self,
+        image_bgr: np.ndarray,
+        plan: SlotPlan,
+        conf: float,
+        iou: float,
+    ) -> tuple[list[RawDetection], float]:
+        """Run detect and return (detections, worker_start_perf_counter)."""
+        started = time.perf_counter()
+        dets = self._infer_plan_sync(image_bgr, plan, conf, iou)
+        return dets, started
+
+    def _log_process_timing(
+        self,
+        request: AiInferenceRequest,
+        *,
+        in_flight: int,
+        io_ms: float,
+        yolo_wait_ms: float,
+        yolo_infer_ms: float,
+        llm_ms: float,
+        total_ms: float,
+        det_count: int,
+        beh_codes: list[str],
+        publish: bool,
+        outcome: str,
+    ) -> None:
+        msg = (
+            "process timing requestId=%s taskId=%s deviceId=%s "
+            "in_flight=%s io_ms=%.0f yolo_wait_ms=%.0f yolo_infer_ms=%.0f "
+            "llm_ms=%.0f total_ms=%.0f det_count=%s beh=%s publish=%s outcome=%s"
+        )
+        args = (
+            request.request_id,
+            request.task_id,
+            request.device_id,
+            in_flight,
+            io_ms,
+            yolo_wait_ms,
+            yolo_infer_ms,
+            llm_ms,
+            total_ms,
+            det_count,
+            beh_codes or "-",
+            publish,
+            outcome,
+        )
+        slow = (
+            io_ms >= _WARN_IO_MS
+            or yolo_wait_ms >= _WARN_YOLO_WAIT_MS
+            or yolo_infer_ms >= _WARN_YOLO_INFER_MS
+            or llm_ms >= _WARN_LLM_MS
+            or total_ms >= _WARN_TOTAL_MS
+        )
+        if slow:
+            logger.warning(msg, *args)
+        else:
+            logger.info(msg, *args)
+
     async def process(self, request: AiInferenceRequest) -> AiInferenceResult | None:
         """Run inference; return result only when there is at least one detection.
 
         Empty / failure outcomes return ``None`` so Kafka skips publish (alarm-only,
         lower result-topic load). Request offset is still committed by the consumer.
         """
-        try:
-            image_bgr = await _run_in_executor(
-                self._io_pool,
-                self._fetch_image_sync,
-                request.bucket or "",
-                request.image_object_key or "",
-            )
-        except Exception:
-            logger.exception(
-                "MinIO download failed requestId=%s bucket=%s key=%s",
-                request.request_id,
-                request.bucket,
-                request.image_object_key,
-            )
-            raise
+        t0 = time.perf_counter()
+        with self._in_flight_lock:
+            self._in_flight += 1
+            in_flight = self._in_flight
 
-        if image_bgr is None:
-            logger.error(
-                "Failed to decode image requestId=%s; skip result publish",
-                request.request_id,
-            )
-            return None
-
-        plan = plan_request(request.algorithm_types)
-        if plan.unknown:
-            logger.warning(
-                "Unknown algorithmTypes=%s requestId=%s",
-                plan.unknown,
-                request.request_id,
-            )
+        io_ms = 0.0
+        yolo_wait_ms = 0.0
+        yolo_infer_ms = 0.0
+        llm_ms = 0.0
+        det_count = 0
+        beh_codes: list[str] = []
 
         try:
-            detections = await _run_in_executor(
-                self._yolo_pool,
-                self._infer_plan_sync,
-                image_bgr,
-                plan,
-                self._settings.yolo_conf,
-                self._settings.yolo_iou,
-            )
-        except Exception:
-            logger.exception(
-                "Inference failed requestId=%s; skip result publish",
-                request.request_id,
-            )
-            return None
-
-        beh_codes = [
-            code
-            for code in plan.known
-            if (spec := get_spec(code)) is not None and spec.stage == "behavior"
-        ]
-        if beh_codes:
-            tasks = [
-                _run_in_executor(
-                    self._llm_pool,
-                    self._enhancer.enhance,
-                    EnhanceRequest(
-                        behavior=code,
-                        image_bgr=image_bgr,
-                        detections=list(detections),
-                        algorithm_code=code,
-                    ),
+            t_io0 = time.perf_counter()
+            try:
+                image_bgr = await _run_in_executor(
+                    self._io_pool,
+                    self._fetch_image_sync,
+                    request.bucket or "",
+                    request.image_object_key or "",
                 )
-                for code in beh_codes
-            ]
-            gathered = await asyncio.gather(*tasks, return_exceptions=True)
-            applied_results: list[EnhanceResult] = []
-            for code, item in zip(beh_codes, gathered):
-                if isinstance(item, Exception):
-                    logger.error(
-                        "Enhancer failed code=%s requestId=%s",
-                        code,
-                        request.request_id,
-                        exc_info=item,
-                    )
-                    continue
-                if item.applied:
-                    applied_results.append(item)
-            if applied_results:
-                detections = _merge_behavior(detections, applied_results)
+            except Exception:
+                logger.exception(
+                    "MinIO download failed requestId=%s bucket=%s key=%s",
+                    request.request_id,
+                    request.bucket,
+                    request.image_object_key,
+                )
+                raise
+            io_ms = (time.perf_counter() - t_io0) * 1000.0
 
-        result = build_result(
-            request,
-            detections,
-            llm_enabled=self._settings.llm_enabled,
-            minio_endpoint=self._settings.minio_endpoint,
-            minio_secure=self._settings.minio_secure,
-        )
-        if not has_positive_detections(result):
-            logger.info(
-                "No detections requestId=%s taskId=%s; skip result publish",
-                request.request_id,
-                request.task_id,
+            if image_bgr is None:
+                self._log_process_timing(
+                    request,
+                    in_flight=in_flight,
+                    io_ms=io_ms,
+                    yolo_wait_ms=0.0,
+                    yolo_infer_ms=0.0,
+                    llm_ms=0.0,
+                    total_ms=(time.perf_counter() - t0) * 1000.0,
+                    det_count=0,
+                    beh_codes=[],
+                    publish=False,
+                    outcome="decode_failed",
+                )
+                return None
+
+            plan = plan_request(request.algorithm_types)
+            if plan.unknown:
+                logger.warning(
+                    "Unknown algorithmTypes=%s requestId=%s",
+                    plan.unknown,
+                    request.request_id,
+                )
+
+            t_yolo_submit = time.perf_counter()
+            try:
+                detections, yolo_started = await _run_in_executor(
+                    self._yolo_pool,
+                    self._infer_plan_sync_timed,
+                    image_bgr,
+                    plan,
+                    self._settings.yolo_conf,
+                    self._settings.yolo_iou,
+                )
+            except Exception:
+                logger.exception(
+                    "Inference failed requestId=%s; skip result publish",
+                    request.request_id,
+                )
+                self._log_process_timing(
+                    request,
+                    in_flight=in_flight,
+                    io_ms=io_ms,
+                    yolo_wait_ms=(time.perf_counter() - t_yolo_submit) * 1000.0,
+                    yolo_infer_ms=0.0,
+                    llm_ms=0.0,
+                    total_ms=(time.perf_counter() - t0) * 1000.0,
+                    det_count=0,
+                    beh_codes=[],
+                    publish=False,
+                    outcome="infer_failed",
+                )
+                return None
+            t_yolo_done = time.perf_counter()
+            yolo_wait_ms = max(0.0, (yolo_started - t_yolo_submit) * 1000.0)
+            yolo_infer_ms = max(0.0, (t_yolo_done - yolo_started) * 1000.0)
+            det_count = len(detections)
+
+            beh_codes = [
+                code
+                for code in plan.known
+                if (spec := get_spec(code)) is not None and spec.stage == "behavior"
+            ]
+            if beh_codes:
+                t_llm0 = time.perf_counter()
+                tasks = [
+                    _run_in_executor(
+                        self._llm_pool,
+                        self._enhancer.enhance,
+                        EnhanceRequest(
+                            behavior=code,
+                            image_bgr=image_bgr,
+                            detections=list(detections),
+                            algorithm_code=code,
+                        ),
+                    )
+                    for code in beh_codes
+                ]
+                gathered = await asyncio.gather(*tasks, return_exceptions=True)
+                applied_results: list[EnhanceResult] = []
+                for code, item in zip(beh_codes, gathered):
+                    if isinstance(item, Exception):
+                        logger.error(
+                            "Enhancer failed code=%s requestId=%s",
+                            code,
+                            request.request_id,
+                            exc_info=item,
+                        )
+                        continue
+                    if item.applied:
+                        applied_results.append(item)
+                if applied_results:
+                    detections = _merge_behavior(detections, applied_results)
+                llm_ms = (time.perf_counter() - t_llm0) * 1000.0
+                det_count = len(detections)
+
+            result = build_result(
+                request,
+                detections,
+                llm_enabled=self._settings.llm_enabled,
+                minio_endpoint=self._settings.minio_endpoint,
+                minio_secure=self._settings.minio_secure,
             )
-            return None
-        return result
+            publish = has_positive_detections(result)
+            total_ms = (time.perf_counter() - t0) * 1000.0
+            self._log_process_timing(
+                request,
+                in_flight=in_flight,
+                io_ms=io_ms,
+                yolo_wait_ms=yolo_wait_ms,
+                yolo_infer_ms=yolo_infer_ms,
+                llm_ms=llm_ms,
+                total_ms=total_ms,
+                det_count=det_count,
+                beh_codes=beh_codes,
+                publish=publish,
+                outcome="ok" if publish else "no_detections",
+            )
+            if not publish:
+                return None
+            return result
+        finally:
+            with self._in_flight_lock:
+                self._in_flight = max(0, self._in_flight - 1)
 
     async def enhance_direct(
         self,

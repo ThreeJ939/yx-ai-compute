@@ -55,7 +55,7 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         backend="world",
         prompts=("person",),
         description="Person detection",
-        conf_threshold=0.4,
+        conf_threshold=0.6,
     ),
     "DET_SHIP": AlgorithmSpec(
         code="DET_SHIP",
@@ -103,7 +103,7 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         backend="fire_smoke",
         prompts=(),
         description="Dedicated YOLOv8 fire/smoke weights",
-        conf_threshold=0.4,
+        conf_threshold=0.5,
     ),
     "BEH_FIRE_SMOKE": AlgorithmSpec(
         code="BEH_FIRE_SMOKE",
@@ -113,7 +113,7 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         prompts=(),
         depends_on=("DET_FIRE_SMOKE",),
         description="Dedicated fire/smoke YOLO + LLM confirmation",
-        conf_threshold=0.4,
+        conf_threshold=0.6,
     ),
 }
 
