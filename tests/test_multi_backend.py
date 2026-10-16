@@ -62,18 +62,28 @@ def test_fire_smoke_specs_backend():
     assert get_spec("DET_PERSON").backend == "world"
 
 
+def test_dredge_spec_backend():
+    det = get_spec("DET_DREDGE")
+    assert det is not None and det.backend == "dredge" and det.stage == "detect"
+    assert det.prompts == ()
+
+
 def test_collect_prompts_skips_non_world():
-    prompts = collect_prompts(["DET_PERSON", "DET_FIRE_SMOKE", "BEH_FIRE_SMOKE"])
+    prompts = collect_prompts(["DET_PERSON", "DET_FIRE_SMOKE", "BEH_FIRE_SMOKE", "DET_DREDGE"])
     assert prompts == ["person"]
     assert collect_prompts(["DET_FIRE_SMOKE"]) == []
+    assert collect_prompts(["DET_DREDGE"]) == []
 
 
 def test_plan_request_by_backend():
-    plan = plan_request(["DET_PERSON", "DET_FIRE_SMOKE", "BEH_FIRE_SMOKE", "NOPE"])
+    plan = plan_request(
+        ["DET_PERSON", "DET_FIRE_SMOKE", "BEH_FIRE_SMOKE", "DET_DREDGE", "NOPE"]
+    )
     assert plan.unknown == ["NOPE"]
-    assert set(plan.by_backend.keys()) == {"world", "fire_smoke"}
+    assert set(plan.by_backend.keys()) == {"world", "fire_smoke", "dredge"}
     assert plan.by_backend["world"] == ["DET_PERSON"]
     assert plan.by_backend["fire_smoke"] == ["DET_FIRE_SMOKE", "BEH_FIRE_SMOKE"]
+    assert plan.by_backend["dredge"] == ["DET_DREDGE"]
     assert plan.prompts == ["person"]
 
 
@@ -187,6 +197,30 @@ def test_orchestrator_fire_smoke_uses_backend_conf_iou():
     orch.close()
 
 
+def test_orchestrator_dredge_uses_backend_conf_iou():
+    settings = Settings(
+        llm_enabled=False,
+        kafka_enabled=False,
+        yolo_conf=0.15,
+        yolo_iou=0.45,
+        dredge_conf=0.4,
+        dredge_iou=0.5,
+    )
+    world = _FakeDetector("person")
+    dredge = _FakeDetector("dredge")
+    orch = Orchestrator(
+        settings,
+        MagicMock(spec=MinioImageStore),
+        detector_registry={"world": world, "dredge": dredge},
+    )
+    plan = plan_request(["DET_PERSON", "DET_DREDGE"])
+    orch._infer_plan_sync(_blank(), plan, conf=0.15, iou=0.45)
+    assert world.last_conf == 0.15
+    assert dredge.last_conf == 0.4
+    assert dredge.last_iou == 0.5
+    orch.close()
+
+
 def test_apply_algo_conf_filter_by_prompt():
     from app.orchestrator import _apply_algo_conf_filter
     from app.registry import ALGORITHM_SPECS, AlgorithmSpec
@@ -201,8 +235,14 @@ def test_apply_algo_conf_filter_by_prompt():
         prompts=("boat", "vessel"),
         conf_threshold=0.5,
     )
-    person_spec = get_spec("DET_PERSON")
-    assert person_spec is not None
+    person_no_thr = AlgorithmSpec(
+        code="DET_PERSON",
+        name="人员检测",
+        stage="detect",
+        backend="world",
+        prompts=("person",),
+        conf_threshold=0.0,
+    )
 
     dets = [
         RawDetection("person", "person", 0.2, [1, 2, 3, 4], prompt="person"),
@@ -214,13 +254,15 @@ def test_apply_algo_conf_filter_by_prompt():
         def _get(code: str):
             if code == "DET_SHIP":
                 return ship_high
+            if code == "DET_PERSON":
+                return person_no_thr
             return ALGORITHM_SPECS.get(code)
 
         mock_get.side_effect = _get
         filtered = _apply_algo_conf_filter(dets, ["DET_PERSON", "DET_SHIP"])
 
     labels_conf = {(d.label, d.confidence) for d in filtered}
-    assert ("person", 0.2) in labels_conf  # DET_PERSON threshold 0 → keep
+    assert ("person", 0.2) in labels_conf  # threshold 0 → keep
     assert ("boat", 0.4) not in labels_conf  # below 0.5
     assert ("boat", 0.7) in labels_conf
 

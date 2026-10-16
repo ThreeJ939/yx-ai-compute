@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     fire_smoke_conf: float = 0.0
     fire_smoke_iou: float = 0.0
 
+    # Dedicated dredge (illegal sand-mining) Ultralytics YOLO. Off by default.
+    dredge_weights: str = "weights/dredge-yolov8n-640.pt"
+    dredge_enabled: bool = False
+    dredge_tiled: bool = True
+    dredge_tile_size: int = 640
+    dredge_tile_overlap: float = 0.2
+    dredge_tile_batch: int = 4
+    dredge_imgsz: int = 640
+    # 0.0 conf/iou = fall back to YOLO_CONF / YOLO_IOU
+    dredge_conf: float = 0.0
+    dredge_iou: float = 0.0
+
     annotated_bucket: str = ""
 
     # Preview UI: GET /preview + POST /preview/image + WS /preview/stream

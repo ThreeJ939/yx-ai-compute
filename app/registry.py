@@ -10,7 +10,7 @@ class AlgorithmSpec:
     code: str
     name: str
     stage: str  # detect | behavior
-    backend: str = "world"  # world | fire_smoke | (future: helmet ...)
+    backend: str = "world"  # world | fire_smoke | dredge | (future: helmet ...)
     prompts: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     description: str = ""
@@ -33,10 +33,13 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
             "crane",
             "dump truck",
             "truck",
+            "lorry",
+            "cargo truck",
+            "heavy truck",
             "roller",
         ),
         description="YOLO-World open-vocab engineering vehicles",
-        conf_threshold=0.6,
+        conf_threshold=0.4,
     ),
 
     "VEHICLE_DETECTION": AlgorithmSpec(
@@ -59,12 +62,12 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
     ),
     "DET_SHIP": AlgorithmSpec(
         code="DET_SHIP",
-        name="船舶检测",
+        name="渔船检测",
         stage="detect",
         backend="world",
-        prompts=("boat", "vessel"),
+        prompts=("boat",),
         description="Ships and boats",
-        conf_threshold=0.6,
+        conf_threshold=0.2,
     ),
     "BEH_FISHING": AlgorithmSpec(
         code="BEH_FISHING",
@@ -114,6 +117,15 @@ ALGORITHM_SPECS: dict[str, AlgorithmSpec] = {
         depends_on=("DET_FIRE_SMOKE",),
         description="Dedicated fire/smoke YOLO + LLM confirmation",
         conf_threshold=0.6,
+    ),
+    "DET_DREDGE": AlgorithmSpec(
+        code="DET_DREDGE",
+        name="非法采砂船检测",
+        stage="detect",
+        backend="dredge",
+        prompts=(),
+        description="Dedicated YOLOv8 dredge (sand-mining) weights",
+        conf_threshold=0.8,
     ),
 }
 

@@ -40,7 +40,7 @@ def _resolve_weights_path(path_str: str) -> Path | None:
 
 
 def _build_detector_registry(settings: Settings, logger: logging.Logger) -> dict:
-    """Assemble backend → Detector map (world always; fire_smoke optional)."""
+    """Assemble backend → Detector map (world always; fire_smoke/dredge optional)."""
     from app.detectors.base import Detector  # noqa: PLC0415
 
     detectors: dict[str, Detector] = {
@@ -79,6 +79,30 @@ def _build_detector_registry(settings: Settings, logger: logging.Logger) -> dict
             logger.info("fire_smoke backend enabled weights=%s", weights_path)
     else:
         logger.info("fire_smoke backend disabled (FIRE_SMOKE_ENABLED=false)")
+
+    if settings.dredge_enabled:
+        dredge_path = _resolve_weights_path(settings.dredge_weights)
+        if dredge_path is None:
+            logger.warning(
+                "DREDGE_ENABLED=true but weights missing: %s — skipping dredge backend",
+                settings.dredge_weights,
+            )
+        else:
+            from app.detectors.ultralytics_yolo import UltralyticsYoloDetector  # noqa: PLC0415
+
+            detectors["dredge"] = UltralyticsYoloDetector(
+                weights=str(dredge_path),
+                device=settings.device,
+                tiled=settings.dredge_tiled,
+                tile_size=settings.dredge_tile_size,
+                tile_overlap=settings.dredge_tile_overlap,
+                tile_batch=settings.dredge_tile_batch,
+                imgsz=settings.dredge_imgsz,
+                name="dredge",
+            )
+            logger.info("dredge backend enabled weights=%s", dredge_path)
+    else:
+        logger.info("dredge backend disabled (DREDGE_ENABLED=false)")
 
     logger.info("Detector backends registered: %s", sorted(detectors.keys()))
     return detectors

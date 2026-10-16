@@ -523,12 +523,11 @@ class Orchestrator:
                 prompts = []
 
             if backend == "fire_smoke":
-                effective_conf = (
-                    self._settings.fire_smoke_conf or conf
-                )
-                effective_iou = (
-                    self._settings.fire_smoke_iou or iou
-                )
+                effective_conf = self._settings.fire_smoke_conf or conf
+                effective_iou = self._settings.fire_smoke_iou or iou
+            elif backend == "dredge":
+                effective_conf = self._settings.dredge_conf or conf
+                effective_iou = self._settings.dredge_iou or iou
             else:
                 effective_conf = conf
                 effective_iou = iou

@@ -59,6 +59,9 @@ python -m app.main
 | `YOLO_IMGSZ` | 单块/整图 `predict` 的 imgsz |
 | `FIRE_SMOKE_CONF` / `FIRE_SMOKE_IOU` | fire_smoke 独立阈值（0=沿用 YOLO_CONF/IOU） |
 | `FIRE_SMOKE_TILED` / `TILE_SIZE` / `TILE_OVERLAP` / `TILE_BATCH` | fire_smoke 独立滑窗与 batch |
+| `DREDGE_ENABLED` / `DREDGE_WEIGHTS` | 非法采砂船专用 YOLOv8（默认 `weights/dredge-yolov8n-640.pt`） |
+| `DREDGE_CONF` / `DREDGE_IOU` | dredge 独立阈值（0=沿用 YOLO_CONF/IOU） |
+| `DREDGE_TILED` / `TILE_SIZE` / `TILE_OVERLAP` / `TILE_BATCH` / `IMGSZ` | dredge 滑窗与输入尺寸（训练对齐建议 640） |
 
 图宽或高大于 `YOLO_TILE_SIZE` 时走滑窗 + 按类 NMS；否则整图一次推理。滑窗时按 `YOLO_TILE_BATCH` 批量送入 GPU。
 
@@ -72,11 +75,13 @@ YOLO_CLIP_WEIGHTS=D:/java_workspace/YongXin/yolo-world-demo/weights/clip/ViT-B-3
 
 ## 算法路由（一期）
 
-| algorithmTypes code | YOLO-World prompts |
-|---------------------|--------------------|
-| `ENGINEERING_VEHICLE_DETECTION` | excavator, bulldozer, truck, crane, ... |
-| `BEH_FISHING` | person（需 LLM/VLM 确认行为后才回写） |
-| `VEHICLE_DETECTION` | car, truck, bus |
+| algorithmTypes code | backend / prompts |
+|---------------------|-------------------|
+| `ENGINEERING_VEHICLE_DETECTION` | world：excavator, bulldozer, truck, crane, ... |
+| `BEH_FISHING` | world：person（需 LLM/VLM 确认行为后才回写） |
+| `VEHICLE_DETECTION` | world：car, truck, bus |
+| `DET_FIRE_SMOKE` | fire_smoke：专用烟火权重 |
+| `DET_DREDGE` | dredge：专用采砂船权重（`dredge-yolov8n-640.pt`） |
 | 未知 code | 槽位 `algorithmNum=0`，不中断其它算法 |
 
 同一请求内多个检测类会合并 prompts **一次前向**，再按 code 过滤填槽。
