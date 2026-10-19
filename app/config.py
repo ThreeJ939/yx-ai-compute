@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     kafka_request_topic: str = "ai.inference.request"
     kafka_result_topic: str = "ai.inference.result"
     kafka_group_id: str = "yx-ai-compute-group"
-    # Max in-flight Kafka messages (YOLO serial, LLM stages overlap)
+    # Max in-flight Kafka messages (per-backend YOLO lanes, LLM stages overlap)
     kafka_max_concurrent: int = 5
 
     minio_endpoint: str = "localhost:9000"

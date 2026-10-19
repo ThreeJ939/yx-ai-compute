@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from app.config import Settings
 from app.detectors.base import DetectBatchResult, RawDetection
@@ -219,6 +222,88 @@ def test_orchestrator_dredge_uses_backend_conf_iou():
     assert dredge.last_conf == 0.4
     assert dredge.last_iou == 0.5
     orch.close()
+
+
+def test_infer_plan_parallel_overlaps_backends():
+    entered: list[str] = []
+    lock = threading.Lock()
+    ready = threading.Event()
+
+    class _GateDetector(_FakeDetector):
+        def detect(self, image_bgr, prompts, conf, iou) -> DetectBatchResult:
+            with lock:
+                entered.append(self.label)
+                if len(entered) >= 2:
+                    ready.set()
+            assert ready.wait(2), "backends did not overlap"
+            return super().detect(image_bgr, prompts, conf, iou)
+
+    settings = Settings(llm_enabled=False, kafka_enabled=False)
+    world = _GateDetector("person")
+    fire = _GateDetector("fire")
+    orch = Orchestrator(
+        settings,
+        MagicMock(spec=MinioImageStore),
+        detector_registry={"world": world, "fire_smoke": fire},
+    )
+    plan = plan_request(["DET_PERSON", "DET_FIRE_SMOKE"])
+    try:
+        dets, _wait_ms, _infer_ms = asyncio.run(
+            orch._infer_plan_parallel(_blank(), plan, 0.2, 0.45)
+        )
+    finally:
+        orch.close()
+    assert world.calls == 1
+    assert fire.calls == 1
+    assert {d.label for d in dets} == {"person", "fire"}
+
+
+def test_infer_plan_parallel_keeps_other_backend_on_failure():
+    class _BoomDetector(_FakeDetector):
+        def detect(self, image_bgr, prompts, conf, iou) -> DetectBatchResult:
+            self.calls += 1
+            raise RuntimeError("boom")
+
+    settings = Settings(llm_enabled=False, kafka_enabled=False)
+    world = _FakeDetector("person")
+    fire = _BoomDetector("fire")
+    orch = Orchestrator(
+        settings,
+        MagicMock(spec=MinioImageStore),
+        detector_registry={"world": world, "fire_smoke": fire},
+    )
+    plan = plan_request(["DET_PERSON", "DET_FIRE_SMOKE"])
+    try:
+        dets, _wait_ms, _infer_ms = asyncio.run(
+            orch._infer_plan_parallel(_blank(), plan, 0.2, 0.45)
+        )
+    finally:
+        orch.close()
+    assert world.calls == 1
+    assert fire.calls == 1
+    assert {d.label for d in dets} == {"person"}
+
+
+def test_infer_plan_parallel_raises_when_every_backend_fails():
+    class _BoomDetector(_FakeDetector):
+        def detect(self, image_bgr, prompts, conf, iou) -> DetectBatchResult:
+            self.calls += 1
+            raise RuntimeError("boom")
+
+    settings = Settings(llm_enabled=False, kafka_enabled=False)
+    world = _BoomDetector("person")
+    fire = _BoomDetector("fire")
+    orch = Orchestrator(
+        settings,
+        MagicMock(spec=MinioImageStore),
+        detector_registry={"world": world, "fire_smoke": fire},
+    )
+    plan = plan_request(["DET_PERSON", "DET_FIRE_SMOKE"])
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            asyncio.run(orch._infer_plan_parallel(_blank(), plan, 0.2, 0.45))
+    finally:
+        orch.close()
 
 
 def test_apply_algo_conf_filter_by_prompt():

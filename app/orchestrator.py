@@ -133,8 +133,17 @@ class Orchestrator:
         self._detector = self._detectors.get("world")
 
         self._enhancer: BehaviorEnhancer = enhancer or NoopBehaviorEnhancer()
-        # YOLO stays serial (GPU single-stream); LLM pool sized for crop concurrency
-        self._yolo_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo")
+        # One lane per model. Same model stays serial; different models overlap.
+        # _yolo_pool is the world lane so set_classes is never called from two threads.
+        self._backend_pools: dict[str, ThreadPoolExecutor] = {
+            name: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"yolo-{name}")
+            for name in self._detectors
+        }
+        world_pool = self._backend_pools.get("world")
+        if world_pool is None:
+            world_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yolo-world")
+            self._backend_pools["world"] = world_pool
+        self._yolo_pool = world_pool
         llm_workers = max(1, int(settings.llm_crop_concurrency))
         self._llm_pool = ThreadPoolExecutor(
             max_workers=llm_workers, thread_name_prefix="llm"
@@ -150,26 +159,22 @@ class Orchestrator:
         self._pool = self._yolo_pool
 
     def close(self) -> None:
-        self._yolo_pool.shutdown(wait=False, cancel_futures=True)
-        self._llm_pool.shutdown(wait=False, cancel_futures=True)
-        self._io_pool.shutdown(wait=False, cancel_futures=True)
+        seen: set[int] = set()
+        for pool in (
+            *self._backend_pools.values(),
+            self._yolo_pool,
+            self._llm_pool,
+            self._io_pool,
+        ):
+            if pool is None or id(pool) in seen:
+                continue
+            seen.add(id(pool))
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def _fetch_image_sync(self, bucket: str, object_key: str) -> np.ndarray | None:
         """Download from MinIO and JPEG-decode (runs on _io_pool)."""
         image_bytes = self._minio.download_bytes(bucket, object_key)
         return _decode_image(image_bytes)
-
-    def _infer_plan_sync_timed(
-        self,
-        image_bgr: np.ndarray,
-        plan: SlotPlan,
-        conf: float,
-        iou: float,
-    ) -> tuple[list[RawDetection], float]:
-        """Run detect and return (detections, worker_start_perf_counter)."""
-        started = time.perf_counter()
-        dets = self._infer_plan_sync(image_bgr, plan, conf, iou)
-        return dets, started
 
     def _log_process_timing(
         self,
@@ -281,9 +286,7 @@ class Orchestrator:
 
             t_yolo_submit = time.perf_counter()
             try:
-                detections, yolo_started = await _run_in_executor(
-                    self._yolo_pool,
-                    self._infer_plan_sync_timed,
+                detections, yolo_wait_ms, yolo_infer_ms = await self._infer_plan_parallel(
                     image_bgr,
                     plan,
                     self._settings.yolo_conf,
@@ -308,9 +311,6 @@ class Orchestrator:
                     outcome="infer_failed",
                 )
                 return None
-            t_yolo_done = time.perf_counter()
-            yolo_wait_ms = max(0.0, (yolo_started - t_yolo_submit) * 1000.0)
-            yolo_infer_ms = max(0.0, (t_yolo_done - yolo_started) * 1000.0)
             det_count = len(detections)
 
             beh_codes = [
@@ -455,14 +455,13 @@ class Orchestrator:
 
         if algorithm_codes:
             plan = plan_request(algorithm_codes)
-            return await _run_in_executor(
-                self._yolo_pool,
-                self._infer_plan_to_batch,
+            dets, _, _ = await self._infer_plan_parallel(
                 image_bgr,
                 plan,
                 effective_conf,
                 effective_iou,
             )
+            return DetectBatchResult(detections=dets)
 
         # Legacy world-only path
         if not prompts:
@@ -473,7 +472,7 @@ class Orchestrator:
             return DetectBatchResult()
 
         return await _run_in_executor(
-            self._yolo_pool,
+            self._backend_pools["world"],
             world.detect,
             image_bgr,
             prompts,
@@ -481,15 +480,151 @@ class Orchestrator:
             effective_iou,
         )
 
-    def _infer_plan_to_batch(
+    def _backends_for_plan(self, plan: SlotPlan) -> dict[str, list[str]]:
+        backends = dict(plan.by_backend or {})
+        if not backends and plan.prompts:
+            # Safety: prompts without by_backend → world
+            backends = {"world": list(plan.known or ["__prompts__"])}
+        return backends
+
+    def _detect_backend_sync(
+        self,
+        backend: str,
+        codes: list[str],
+        image_bgr: np.ndarray,
+        plan: SlotPlan,
+        conf: float,
+        iou: float,
+    ) -> list[RawDetection]:
+        detector = self._detectors.get(backend)
+        if detector is None:
+            logger.warning(
+                "No detector registered for backend=%s codes=%s; skipping",
+                backend,
+                codes,
+            )
+            return []
+        if backend == "world":
+            prompts = collect_prompts(codes, backend="world")
+            if not prompts and plan.prompts:
+                prompts = list(plan.prompts)
+            if not prompts:
+                return []
+        else:
+            prompts = []
+
+        if backend == "fire_smoke":
+            effective_conf = self._settings.fire_smoke_conf or conf
+            effective_iou = self._settings.fire_smoke_iou or iou
+        elif backend == "dredge":
+            effective_conf = self._settings.dredge_conf or conf
+            effective_iou = self._settings.dredge_iou or iou
+        else:
+            effective_conf = conf
+            effective_iou = iou
+
+        batch = detector.detect(
+            image_bgr,
+            prompts=prompts,
+            conf=effective_conf,
+            iou=effective_iou,
+        )
+        filtered = _apply_algo_conf_filter(batch.detections, codes)
+        logger.info(
+            "Detect done backend=%s codes=%s detections=%s filtered=%s conf=%.3f iou=%.3f",
+            backend,
+            codes,
+            len(batch.detections),
+            len(filtered),
+            effective_conf,
+            effective_iou,
+        )
+        return filtered
+
+    def _detect_backend_timed(
+        self,
+        backend: str,
+        codes: list[str],
+        image_bgr: np.ndarray,
+        plan: SlotPlan,
+        conf: float,
+        iou: float,
+    ) -> tuple[list[RawDetection], float]:
+        started = time.perf_counter()
+        dets = self._detect_backend_sync(backend, codes, image_bgr, plan, conf, iou)
+        return dets, started
+
+    async def _infer_plan_parallel(
         self,
         image_bgr: np.ndarray,
         plan: SlotPlan,
         conf: float,
         iou: float,
-    ) -> DetectBatchResult:
-        dets = self._infer_plan_sync(image_bgr, plan, conf, iou)
-        return DetectBatchResult(detections=dets)
+    ) -> tuple[list[RawDetection], float, float]:
+        """Run each backend on its own lane. Returns (dets, wait_ms, infer_ms).
+
+        wait_ms is the longest queue before a lane starts. infer_ms is the wall
+        clock from the earliest start until every lane has finished.
+        A single lane failure drops that lane's boxes. Every lane failing raises.
+        """
+        backends = self._backends_for_plan(plan)
+        t_submit = time.perf_counter()
+        jobs: list[tuple[str, object]] = []
+        for backend, codes in backends.items():
+            pool = self._backend_pools.get(backend)
+            if pool is None:
+                logger.warning(
+                    "No detector lane for backend=%s codes=%s; skipping",
+                    backend,
+                    codes,
+                )
+                continue
+            jobs.append(
+                (
+                    backend,
+                    _run_in_executor(
+                        pool,
+                        self._detect_backend_timed,
+                        backend,
+                        codes,
+                        image_bgr,
+                        plan,
+                        conf,
+                        iou,
+                    ),
+                )
+            )
+        if not jobs:
+            return [], 0.0, 0.0
+
+        gathered = await asyncio.gather(
+            *(task for _, task in jobs),
+            return_exceptions=True,
+        )
+        t_done = time.perf_counter()
+        dets: list[RawDetection] = []
+        starts: list[float] = []
+        first_error: BaseException | None = None
+        for (backend, _), item in zip(jobs, gathered):
+            if isinstance(item, BaseException):
+                if first_error is None:
+                    first_error = item
+                logger.error(
+                    "Detect failed backend=%s",
+                    backend,
+                    exc_info=item,
+                )
+                continue
+            part, started = item
+            dets.extend(part)
+            starts.append(started)
+        if first_error is not None and not starts:
+            raise first_error
+        if not starts:
+            return [], 0.0, 0.0
+        yolo_wait_ms = max(0.0, (max(starts) - t_submit) * 1000.0)
+        yolo_infer_ms = max(0.0, (t_done - min(starts)) * 1000.0)
+        return dets, yolo_wait_ms, yolo_infer_ms
 
     def _infer_plan_sync(
         self,
@@ -499,56 +634,12 @@ class Orchestrator:
         iou: float,
     ) -> list[RawDetection]:
         all_dets: list[RawDetection] = []
-        backends = plan.by_backend or {}
-        if not backends and plan.prompts:
-            # Safety: prompts without by_backend → world
-            backends = {"world": plan.known or ["__prompts__"]}
-
-        for backend, codes in backends.items():
-            detector = self._detectors.get(backend)
-            if detector is None:
-                logger.warning(
-                    "No detector registered for backend=%s codes=%s; skipping",
-                    backend,
-                    codes,
+        for backend, codes in self._backends_for_plan(plan).items():
+            all_dets.extend(
+                self._detect_backend_sync(
+                    backend, codes, image_bgr, plan, conf, iou
                 )
-                continue
-            if backend == "world":
-                prompts = collect_prompts(codes, backend="world")
-                if not prompts and plan.prompts:
-                    prompts = list(plan.prompts)
-                if not prompts:
-                    continue
-            else:
-                prompts = []
-
-            if backend == "fire_smoke":
-                effective_conf = self._settings.fire_smoke_conf or conf
-                effective_iou = self._settings.fire_smoke_iou or iou
-            elif backend == "dredge":
-                effective_conf = self._settings.dredge_conf or conf
-                effective_iou = self._settings.dredge_iou or iou
-            else:
-                effective_conf = conf
-                effective_iou = iou
-
-            batch = detector.detect(
-                image_bgr,
-                prompts=prompts,
-                conf=effective_conf,
-                iou=effective_iou,
             )
-            filtered = _apply_algo_conf_filter(batch.detections, codes)
-            logger.info(
-                "Detect done backend=%s codes=%s detections=%s filtered=%s conf=%.3f iou=%.3f",
-                backend,
-                codes,
-                len(batch.detections),
-                len(filtered),
-                effective_conf,
-                effective_iou,
-            )
-            all_dets.extend(filtered)
         return all_dets
 
     def _infer_sync(self, image_bgr: np.ndarray, prompts: list[str]):
